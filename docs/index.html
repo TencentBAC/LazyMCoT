@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LazyMCoT: Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding</title>
+  <meta name="description"
+        content="LazyMCoT — a dynamic, training-free framework that adaptively allocates visual grounding effort according to sample difficulty.">
+
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <style>
+    body { font-family: 'Google Sans', 'Noto Sans', sans-serif; }
+    .hero-body { padding-top: 3rem; padding-bottom: 2rem; }
+    .publication-title { font-weight: 700; line-height: 1.25; }
+    .author-block { margin-right: 0.6rem; }
+    .section { padding-top: 2.5rem; padding-bottom: 2.5rem; }
+    .figure-caption { color: #555; font-size: 0.95rem; margin-top: 0.75rem; }
+    .feature-card {
+      height: 100%;
+      border-radius: 12px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+      padding: 1.5rem;
+      background: #fff;
+      transition: transform 0.2s ease;
+    }
+    .feature-card:hover { transform: translateY(-4px); }
+    .feature-icon { font-size: 1.8rem; margin-bottom: 0.6rem; color: #3273dc; }
+    .section-title { margin-bottom: 1.75rem !important; }
+    pre code { font-size: 0.85rem; }
+    .img-rounded { border-radius: 10px; box-shadow: 0 4px 14px rgba(0,0,0,0.10); }
+    .links-buttons .button { margin: 0.25rem; }
+  </style>
+</head>
+<body>
+
+<!-- ============================ HERO / TITLE ============================ -->
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop has-text-centered">
+      <h1 class="title is-2 publication-title">
+        Focus When Necessary:<br>
+        Adaptive Routing and Collaborative Grounding<br>
+        for Training-Free Visual Grounding
+      </h1>
+
+      <div class="is-size-5 publication-authors" style="margin-top: 1.25rem;">
+        <span class="author-block">Yifan Wang<sup>1,2</sup>,</span>
+        <span class="author-block">Peiming Li<sup>1,3</sup>,</span>
+        <span class="author-block">Shiyu Li<sup>1</sup>,</span>
+        <span class="author-block">Zhiyuan Hu<sup>1,3</sup>,</span>
+        <span class="author-block">Xiaochen Yang<sup>4</sup>,</span><br>
+        <span class="author-block">Wenming Yang<sup>2,&#9993;</sup>,</span>
+        <span class="author-block">Yang Tang<sup>1,&#9993;</sup>,</span>
+        <span class="author-block">Zheng Wei<sup>1,&#9993;</sup></span>
+      </div>
+
+      <div class="is-size-6 publication-authors" style="margin-top: 0.75rem;">
+        <span class="author-block"><sup>1</sup>Tencent BAC</span>&nbsp;&nbsp;
+        <span class="author-block"><sup>2</sup>Tsinghua University</span>&nbsp;&nbsp;
+        <span class="author-block"><sup>3</sup>Peking University</span>&nbsp;&nbsp;
+        <span class="author-block"><sup>4</sup>University of Glasgow</span>
+      </div>
+
+      <div class="is-size-7 has-text-grey" style="margin-top: 0.5rem;">
+        <sup>&#9993;</sup> Corresponding authors
+      </div>
+
+      <div class="links-buttons" style="margin-top: 1.75rem;">
+        <a class="button is-dark is-rounded" href="#">
+          <span class="icon"><i class="fas fa-file-pdf"></i></span><span>Paper</span>
+        </a>
+        <a class="button is-dark is-rounded" href="#">
+          <span class="icon"><i class="fab fa-github"></i></span><span>Code</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ABSTRACT ============================ -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">📄 Abstract</h2>
+    <div class="content has-text-justified is-size-5">
+      <p>
+        While Multimodal Large Language Models (MLLMs) excel in cross-modal reasoning, they often
+        struggle to perceive fine-grained details in complex high-resolution images. Recent
+        <em>training-free</em> methods address this through image scaling and localized cropping.
+        However, applying these manipulations indiscriminately introduces computational redundancy
+        for simple queries and can degrade accuracy by truncating essential global context or
+        introducing irrelevant background noise.
+      </p>
+      <p>
+        To this end, we propose <strong>LazyMCoT</strong>, a dynamic and training-free framework that
+        adaptively allocates visual grounding effort based on sample difficulty. The framework features
+        an <strong><em>Adaptive Routing</em></strong> mechanism that evaluates predictive uncertainty
+        using first-token statistics from a single forward pass, efficiently bypassing confident cases
+        while ensuring the recall of difficult samples via conformal calibration. For these challenging
+        cases, a <strong><em>Collaborative Grounding</em></strong> module integrates the inherent
+        cross-modal attention of the model with an external visual expert through a two-stage refinement
+        process, generating a precise localized display to recover small or occluded targets. Extensive
+        experiments across diverse benchmarks demonstrate that LazyMCoT rivals training-based approaches
+        by simultaneously improving reasoning accuracy and reducing average inference latency.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ OVERVIEW / FEATURES ============================ -->
+<section class="section" style="background:#f7f9fc;">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">🌟 Overview</h2>
+    <div class="columns is-multiline">
+      <div class="column is-half">
+        <div class="feature-card">
+          <div class="feature-icon">🧭</div>
+          <p class="title is-5">Adaptive Routing</p>
+          <p>A lightweight difficulty-aware router decides <em>whether</em> visual grounding is needed
+             using only zero-cost first-token statistics, with a conformal-calibrated threshold that
+             guarantees a controllable recall of hard samples.</p>
+        </div>
+      </div>
+      <div class="column is-half">
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <p class="title is-5">Collaborative Grounding</p>
+          <p>Couples the VLM's cross-modal attention with an external visual expert through a two-stage
+             refinement, producing a precise Localized Panel Display for re-querying.</p>
+        </div>
+      </div>
+      <div class="column is-half">
+        <div class="feature-card">
+          <div class="feature-icon">🔌</div>
+          <p class="title is-5">Training-Free &amp; Plug-and-Play</p>
+          <p>Works out of the box on multiple VLM backbones (Qwen2.5-VL, Qwen3-VL, InternVL3) without
+             any fine-tuning.</p>
+        </div>
+      </div>
+      <div class="column is-half">
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <p class="title is-5">Faster and More Accurate</p>
+          <p>Confident queries skip the heavy grounding pipeline entirely, reducing average latency
+             while preserving and often improving accuracy.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ MOTIVATION ============================ -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">💡 Motivation</h2>
+    <div class="has-text-centered">
+      <img src="static/images/intro.png" class="img-rounded" width="92%" alt="Motivation">
+      <p class="figure-caption">
+        <strong>Figure 1.</strong> LazyMCoT allocates visual grounding effort by sample difficulty.
+        Previous training-free methods indiscriminately apply heavy visual manipulation to every sample,
+        whereas LazyMCoT routes easy samples to a direct answer and dispatches only hard samples through
+        Collaborative Grounding before re-querying the MLLM.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ METHOD ============================ -->
+<section class="section" style="background:#f7f9fc;">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">🔬 Method</h2>
+    <div class="has-text-centered">
+      <img src="static/images/pipeline.jpg" class="img-rounded" width="100%" alt="LazyMCoT pipeline">
+      <p class="figure-caption">
+        <strong>Figure 2.</strong> Overview of LazyMCoT. The Adaptive Router uses first-token statistics
+        to decide whether to answer directly or invoke Collaborative Grounding, which fuses attention-driven
+        evidence with an external visual expert to render a Localized Panel Display for re-querying.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ANALYSIS ============================ -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">📊 Statistical Analysis</h2>
+    <div class="columns">
+      <div class="column has-text-centered">
+        <img src="static/images/statistical_a.png" class="img-rounded" width="100%" alt="Statistical analysis (a)">
+      </div>
+      <div class="column has-text-centered">
+        <img src="static/images/statistical_b.png" class="img-rounded" width="100%" alt="Statistical analysis (b)">
+      </div>
+    </div>
+    <p class="figure-caption has-text-centered">
+      <strong>Figure 3.</strong> Zero-cost first-token features (option top-probability and option-vs-non-option
+      logit gap) exhibit a strong monotonic correlation with predictive entropy, cleanly separating directly
+      solvable samples from those that genuinely require dense visual grounding.
+    </p>
+  </div>
+</section>
+
+<!-- ============================ COMPARISON ============================ -->
+<section class="section" style="background:#f7f9fc;">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">📈 Comparison</h2>
+    <div class="has-text-centered">
+      <img src="static/images/compare.png" class="img-rounded" width="92%" alt="Comparison">
+      <p class="figure-caption">
+        <strong>Figure 4.</strong> Compared with indiscriminate grounding, LazyMCoT simultaneously improves
+        accuracy and reduces average inference latency by focusing effort only when necessary.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ VISUALIZATION ============================ -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">🔍 Qualitative Results</h2>
+    <div class="has-text-centered" style="margin-bottom: 2rem;">
+      <img src="static/images/direct.png" class="img-rounded" width="92%" alt="Direct answer routing">
+      <p class="figure-caption">
+        <strong>Figure 5.</strong> For confident queries, the Adaptive Router returns the direct answer and
+        skips the grounding pipeline entirely.
+      </p>
+    </div>
+    <div class="has-text-centered">
+      <img src="static/images/case_appendix.png" class="img-rounded" width="100%" alt="Case study">
+      <p class="figure-caption">
+        <strong>Figure 6.</strong> Case studies of Collaborative Grounding on hard samples: the Localized
+        Panel Display recovers small or occluded targets for accurate re-querying.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ CITATION ============================ -->
+<section class="section" style="background:#f7f9fc;">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered section-title">📚 Citation</h2>
+    <pre><code>@article{wang2026lazymcot,
+  title={Focus When Necessary: Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding},
+  author={Wang, Yifan and Li, Peiming and Li, Shiyu and Hu, Zhiyuan and Yang, Xiaochen and Yang, Wenming and Tang, Yang and Wei, Zheng},
+  journal={arXiv preprint},
+  year={2026}
+}</code></pre>
+  </div>
+</section>
+
+<!-- ============================ FOOTER ============================ -->
+<footer class="footer">
+  <div class="content has-text-centered">
+    <p>
+      &copy; 2026 LazyMCoT. Released under the Apache License 2.0.<br>
+      This page was built with the
+      <a href="https://github.com/eliahuhorwitz/Academic-project-page-template">Academic Project Page Template</a>.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
