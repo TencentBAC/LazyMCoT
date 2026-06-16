@@ -1,12 +1,27 @@
 <div align="center">
-
-# LazyMCoT: Focus When Necessary — Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding
-
-Yifan Wang, Peiming Li, Shiyu Li, Zhiyuan Hu, Xiaochen Yang, Wenming Yang, Yang Tang, Zheng Wei
-
-Tencent BAC&nbsp;&nbsp;|&nbsp;&nbsp;Tsinghua University&nbsp;&nbsp;|&nbsp;&nbsp;Peking University&nbsp;&nbsp;|&nbsp;&nbsp;University of Glasgow
-
+<h1>Focus When Necessary: Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding</h1>
 </div>
+
+<div align="center">
+  <a href='https://tencentbac.github.io/LazyMCoT/'><img src='https://img.shields.io/badge/Homepage-LazyMCoT-6c5ce7?logo=github&logoColor=white'></a>
+  <a href='https://arxiv.org/abs/2606.16158'><img src='https://img.shields.io/badge/Paper-arXiv-d63031?logo=arxiv&logoColor=white'></a>
+  <a href='https://huggingface.co/collections/TencentBAC/lazymcot'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models-0984e3'></a>
+  <a href='https://github.com/TencentBAC/LazyMCoT'><img src='https://img.shields.io/badge/Code-GitHub-181717?logo=github'></a>
+</div>
+
+<br>
+
+<p align="center">
+  <b>Yifan Wang<sup>1,2</sup>, Peiming Li<sup>1,3</sup>, Shiyu Li<sup>1</sup>, Zhiyuan Hu<sup>1,3</sup>, Xiaochen Yang<sup>4</sup>, Wenming Yang<sup>2,†</sup>, Yang Tang<sup>1,†,‡</sup>, Zheng Wei<sup>1,†</sup></b><br>
+  <br>
+  <sup>1</sup>Tencent BAC &nbsp;&nbsp; <sup>2</sup>Tsinghua University &nbsp;&nbsp; <sup>3</sup>Peking University &nbsp;&nbsp; <sup>4</sup>University of Glasgow<br>
+  <br>
+  <sup>†</sup>Corresponding Authors &nbsp;&nbsp; <sup>‡</sup>Project Lead<br>
+  <br>
+  <i>📧 {wyattyfwang, ethanntang, hemingwei}@tencent.com</i>
+  <br>
+  <br>
+</p>
 
 ---
 
@@ -172,11 +187,14 @@ LazyMCoT/
 If you find LazyMCoT useful in your research, please consider citing:
 
 ```bibtex
-@article{wang2026lazymcot,
-  title={Focus When Necessary: Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding},
-  author={Wang, Yifan and Li, Peiming and Li, Shiyu and Hu, Zhiyuan and Yang, Xiaochen and Yang, Wenming and Tang, Yang and Wei, Zheng},
-  journal={arXiv preprint},
-  year={2026}
+@misc{wang2026focusnecessaryadaptiverouting,
+      title={Focus When Necessary: Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding}, 
+      author={Yifan Wang and Peiming Li and Shiyu Li and Zhiyuan Hu and Xiaochen Yang and Wenming Yang and Yang Tang and Zheng Wei},
+      year={2026},
+      eprint={2606.16158},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2606.16158}, 
 }
 ```
 
@@ -186,4 +204,4 @@ This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE
 
 ## 🙏 Acknowledgments
 
-This work builds upon several excellent open-source projects, including [Qwen-VL](https://github.com/QwenLM/Qwen2.5-VL), [InternVL](https://github.com/OpenGVLab/InternVL), [SAM3](https://github.com/facebookresearch/sam3) and [Grounding DINO](https://github.com/IDEA-Research/GroundingDINO). We thank the authors for their contributions to the community.
+This work builds upon several excellent open-source projects, including [Qwen-VL](https://github.com/QwenLM/Qwen2.5-VL), [InternVL](https://github.com/OpenGVLab/InternVL), [SAM3](https://github.com/facebookresearch/sam3), [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL) and [HiDe](https://github.com/Tennine2077/HiDe). We thank the authors for their contributions to the community.
