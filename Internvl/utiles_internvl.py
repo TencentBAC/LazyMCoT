@@ -69,7 +69,7 @@ def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbna
     # resize the image
     resized_img = image.resize((target_width, target_height))
     processed_images = []
-    block_indices = []  # <--- 新增：用于存储每个块的编号
+    block_indices = [] # <--- 
     for i in range(blocks):
         box = (
             (i % (target_width // image_size)) * image_size,
@@ -167,8 +167,6 @@ def get_input(model, tokenizer, pixel_values, question, generation_config, histo
     input_ids = model_inputs['input_ids'].to(model.device)
     attention_mask = model_inputs['attention_mask'].to(model.device)
     generation_config['eos_token_id'] = eos_token_id
-    # InternVL3-8B-Instruct: tokenizer 自带 pad_token = "<\n>" (id=151643),
-    # 与 eos (151645) 不同。显式带上以避免 transformers 提示
     # "Setting pad_token_id to eos_token_id:151645 for open-end generation"。
     pad_id = getattr(tokenizer, 'pad_token_id', None)
     if pad_id is None:
@@ -213,8 +211,6 @@ def get_attention(model,
     return outputs
 
 from transformers.models.qwen2.modeling_qwen2 import *  # noqa: F401,F403  (kept for backward compat)
-# 新版 transformers 不再通过 `from ... import *` 暴露 Tuple/Cache/Unpack/... 等签名
-# 所需符号, 因此这里显式按“最常见路径 + 回退路径”逐个补齐, 保证跨版本可用.
 import torch.nn.functional as F
 
 # --- transformers.cache_utils: Cache / DynamicCache ---
@@ -223,30 +219,24 @@ from transformers.cache_utils import Cache, DynamicCache  # type: ignore
 # --- transformers.modeling_outputs: BaseModelOutputWithPast ---
 from transformers.modeling_outputs import BaseModelOutputWithPast  # type: ignore
 
-# --- Unpack (Python 3.11+ 在 typing; 老版本在 typing_extensions) ---
 try:
     from typing import Unpack  # type: ignore
 except ImportError:  # pragma: no cover
     from typing_extensions import Unpack  # type: ignore
 
-# --- FlashAttentionKwargs (跨版本路径不同) ---
 try:
     from transformers.modeling_flash_attention_utils import FlashAttentionKwargs  # type: ignore
 except Exception:  # pragma: no cover
     try:
         from transformers.utils import FlashAttentionKwargs  # type: ignore
     except Exception:
-        # 兜底: 用 TypedDict 占位, 仅供类型签名使用
         from typing import TypedDict
         class FlashAttentionKwargs(TypedDict, total=False):  # type: ignore
             pass
 
-# --- logger (与原 modeling_qwen2 等价) ---
 from transformers.utils import logging as _hf_logging  # type: ignore
 logger = _hf_logging.get_logger(__name__)
 
-# --- 旋转位置编码 / kv 复制 / eager attention / ALL_ATTENTION_FUNCTIONS ---
-# 这些在 qwen2 模块里本身有定义, 显式精确 import (而不是 *) 更稳:
 from transformers.models.qwen2.modeling_qwen2 import (  # type: ignore
     apply_rotary_pos_emb,
     repeat_kv,
@@ -255,7 +245,6 @@ from transformers.models.qwen2.modeling_qwen2 import (  # type: ignore
 try:
     from transformers.models.qwen2.modeling_qwen2 import eager_attention_forward  # type: ignore
 except Exception:  # pragma: no cover
-    # 老版本可能在 llama 里定义后被复用
     from transformers.models.llama.modeling_llama import eager_attention_forward  # type: ignore
 
 try:
@@ -272,28 +261,22 @@ def layer_forward(
     position_embeddings: tuple[torch.Tensor, torch.Tensor] = None,
     attention_mask: Optional[torch.Tensor] = None,
     past_key_value: Optional[Cache] = None,
-    past_key_values: Optional[Cache] = None,   # 4.57 复数兼容
+    past_key_values: Optional[Cache] = None, # 4.57 
     cache_position: Optional[torch.LongTensor] = None,
     target_indices=None,
     position_ids: Optional[torch.LongTensor] = None,
     **kwargs,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
-    自包含 eager attention 实现, 不依赖 transformers 内部 eager_attention_forward,
-    避免 4.57 / 4.58 接口抖动。同时返回 chunked attn_weights 供 GRACE 使用。
+     eager attention , transformers eager_attention_forward,
+     4.57 / 4.58 chunked attn_weights GRACE 
     """
-    # 4.57 上 DecoderLayer.forward 用 past_key_values (复数) 调用 self_attn,
-    # 4.56 及以下用 past_key_value (单数) — 这里两者都接受。
     if past_key_value is None and past_key_values is not None:
         past_key_value = past_key_values
 
     input_shape = hidden_states.shape[:-1]               # [B, Q]
     hidden_shape = (*input_shape, -1, self.head_dim)     # [B, Q, H, D]
 
-    # NOTE: q_proj/k_proj 的 out_features 不同 (num_heads*head_dim vs num_kv_heads*head_dim),
-    # 不能用同一个 hidden_shape view! 必须各自按 head_dim reshape。
-    # 关键: 在 InternVL3 的某些路径下 hidden_states 可能是 [Q, hidden] (无 batch),
-    # 所以这里强制规整为 [B, Q, hidden] 以避免 reshape/transpose 维度顺序错位。
     _hd = self.head_dim
     if hidden_states.dim() == 2:
         # [Q, H] -> [1, Q, H]
@@ -309,11 +292,9 @@ def layer_forward(
     key_states   = _k.view(bsz, q_len, -1, _hd).transpose(1, 2)  # [B, Hkv, Q, D]
     value_states = _v.view(bsz, q_len, -1, _hd).transpose(1, 2)  # [B, Hkv, Q, D]
 
-    # ---- RoPE: 兼容 4.57 ----
     if position_embeddings is not None:
         cos, sin = position_embeddings
     else:
-        # 极少数路径下上层没传 position_embeddings; 用模型自带 rotary
         if hasattr(self, "rotary_emb"):
             try:
                 cos, sin = self.rotary_emb(value_states, position_ids)
@@ -323,9 +304,6 @@ def layer_forward(
             raise RuntimeError("layer_forward: missing position_embeddings and rotary_emb")
 
     try:
-        # 4.57 的 cos/sin 来自 Qwen2RotaryEmbedding.forward, 形状是 [B, seq, head_dim] (3D);
-        # apply_rotary_pos_emb 默认 unsqueeze_dim=1, 内部把 cos/sin -> [B,1,seq,D] 与 q/k 广播。
-        # 但若上层提前 unsqueeze 过 (4D), 则我们自己手动算 RoPE, 跳过 apply 的 unsqueeze。
         if cos.dim() == 4:
             from transformers.models.qwen2.modeling_qwen2 import rotate_half  # type: ignore
             query_states = (query_states * cos) + (rotate_half(query_states) * sin)
@@ -341,24 +319,13 @@ def layer_forward(
               f"head_dim={self.head_dim} err={_rope_e}")
         raise
 
-    # ---- KV cache 更新 ----
     if past_key_value is not None and hasattr(past_key_value, "update"):
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         key_states, value_states = past_key_value.update(
             key_states, value_states, self.layer_idx, cache_kwargs
         )
 
-    # ---- 主路径 attn_output: 用 SDPA 避免实例化 [B, Hq, Q, K] -----------------
-    #   InternVL3 多图拼接下 Q/K 可达 ~50k, 显式 matmul 会在 bf16 下分配 ~140 GiB,
-    #   爆显存。
     #
-    #   ⚠️ 重要: PyTorch SDPA 选 backend 的规则:
-    #     - flash / mem-efficient backend: attn_mask 必须为 None 或 bool;
-    #       一旦传入 additive **浮点** 4D mask, 会回退到 math backend,
-    #       而 math backend 会显式构造 [B,H,Q,K] -> 直接 OOM。
-    #     - 我们 batch=1 推理无 padding, 因果 mask 完全等价于 is_causal=True,
-    #       所以这里强制走 is_causal=True + attn_mask=None 路径,
-    #       从而吃到 fused flash/efficient kernel (O(Q*D) 显存)。
     # ---------------------------------------------------------------------------
     scaling = getattr(self, "scaling", None)
     if scaling is None:
@@ -366,11 +333,6 @@ def layer_forward(
 
     Q_len = query_states.shape[-2]
     K_len = key_states.shape[-2]
-    # 决定 SDPA 调用参数:
-    #   - Q == K: 完整因果 (prefill 或全图无 cache) -> is_causal=True, mask=None
-    #   - Q == 1: 增量解码 single-token -> is_causal=False, mask=None (单 query 无需 mask)
-    #   - 其它 (Q != K 且 Q > 1, 多 token 续写带 cache): 仍走 fused, 用 is_causal=True
-    #     PyTorch 在 Q<K 且 is_causal=True 时会自动正确对齐 (KV cache 增量 batch)
     if Q_len == K_len:
         _is_causal = True
         _sdpa_mask = None
@@ -378,12 +340,9 @@ def layer_forward(
         _is_causal = False
         _sdpa_mask = None
     else:
-        # Q < K 的多 token 续写, fused kernel 在 PyTorch >=2.4 已经支持
-        # is_causal=True + Q!=K 的对齐
         _is_causal = True
         _sdpa_mask = None
 
-    # SDPA 在 PyTorch>=2.5 支持 enable_gqa
     try:
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,                          # [B, Hq, Q, D]
@@ -396,7 +355,6 @@ def layer_forward(
             enable_gqa=True,
         )
     except TypeError:
-        # 旧版 PyTorch 没有 enable_gqa 参数 -> 手动 repeat
         _k_full = repeat_kv(key_states,   self.num_key_value_groups)
         _v_full = repeat_kv(value_states, self.num_key_value_groups)
         attn_output = torch.nn.functional.scaled_dot_product_attention(
@@ -407,38 +365,27 @@ def layer_forward(
             scale=scaling,
         )
         del _k_full, _v_full
-    # SDPA 返回 [B, Hq, Q, D] -> [B, Q, Hq, D]
     attn_output = attn_output.transpose(1, 2).contiguous()
 
-    # ---- 是否需要计算 chunked attention weights (供 GRACE 使用) ----
-    # transformers 4.57+ 的 Qwen2DecoderLayer.forward 不会把 output_attentions
-    # 透传到 self_attn 的 kwargs (该路径已被砍), 所以这里 kwargs.get("output_attentions")
-    # 几乎永远拿不到, 默认 True 会让所有 28 层都进入 chunked_attention,
-    # 单层 repeat_kv(K) 把 [B,4,K,128] 扩到 [B,28,K,128], K~30k+ 时累计爆显存
-    # (实测 92.78 GiB)。
-    # 修复: 用 self.self_attn._need_attn_weights 属性传递信号 (在 qwen2_forward 内
-    # 按 SELECT_LAYER 设置), 默认 False 安全。
     _need_attn = bool(getattr(self, "_need_attn_weights", False))
-    # 兼容旧调用路径: 如果 kwargs 显式传了, 也尊重它 (覆盖属性)
     if "output_attentions" in kwargs:
         _need_attn = bool(kwargs["output_attentions"])
     if _need_attn:
         def chunked_attention(query_states, key_states, head_dim, target_indices=None, chunk_size=512, attention_mask=None):
             """
-            先提取 target_indices 对应的 query token，再在其上进行分块处理。
+             target_indices query token
             
-            参数:
+            :
                 query_states: [B, H, Q_LEN, D]
                 key_states:   [B, H, K_LEN, D]
                 head_dim:     D
-                target_indices: Optional[List[int] or Tensor] 需要计算 attention 的 query token 索引列表
-                chunk_size:   每次处理多少个 target token
-                attention_mask: Optional[Tensor] 形状 [B, 1, Q_LEN, K_LEN] 或类似
+                target_indices: Optional[List[int] or Tensor] attention query token 
+                chunk_size: target token
+                attention_mask: Optional[Tensor] [B, 1, Q_LEN, K_LEN] 
                 
-            返回:
-                attn_weights: [B, H, Q_LEN, K_LEN]，未计算的位置为 0
+            :
+                attn_weights: [B, H, Q_LEN, K_LEN] 0
             """
-            # ✅ 调整输入张量的维度顺序：[B, Q_LEN, H, D] -> [B, H, Q_LEN, D]
             key_states = repeat_kv(key_states, self.num_key_value_groups)
             # query_states = query_states.permute(0, 2, 1, 3).contiguous()
             # key_states = key_states.permute(0, 2, 1, 3).contiguous()
@@ -449,10 +396,8 @@ def layer_forward(
             device = query_states.device
             dtype = query_states.dtype
 
-            # 统一类型
             key_states = key_states.to(dtype)
 
-            # 初始化输出张量
             # print(B,H,Q_LEN,K_LEN)
             # attn_weights = torch.zeros(B, 1, Q_LEN,K_LEN,device=device, dtype=dtype)
 
@@ -460,7 +405,6 @@ def layer_forward(
 
             scale = 1.0 / math.sqrt(head_dim)
 
-            # 如果没有指定 target_indices，则全部计算
             if target_indices is None:
                 target_indices = torch.arange(Q_LEN, device=device)
             else:
@@ -471,22 +415,18 @@ def layer_forward(
 
             num_targets = len(target_indices)
             # print(num_targets)
-            # ✅ 先提取所有需要计算的 query token
             selected_query_states = query_states.index_select(dim=2, index=target_indices)  # [B, H, num_targets, D]
 
-            # ✅ 在这些选中的 token 上分块处理
             for i in range(0, num_targets, chunk_size):
                 end_i = min(i + chunk_size, num_targets)
-                current_indices = target_indices[i:end_i]  # 当前 chunk 的原始位置
+                current_indices = target_indices[i:end_i] # chunk 
                 q_chunk = selected_query_states[:, :, i:end_i, :]  # [B, H, chunk_q, D]
                 B,H,_,_ = q_chunk.shape
                 attn_chunk = torch.zeros(B, 1, end_i - i, K_LEN, device=device, dtype=dtype)
                 for h in range(H):
                     q_chunk_h = q_chunk[:, h, :, :][:,None]
                     key_states_h = key_states[:, h, :, :][:,None]
-                    # 计算当前 chunk 的 attention
                     attn_chunk_h = torch.matmul(q_chunk_h, key_states_h.transpose(2, 3)) * scale  # [B, H, chunk_q, K_LEN]
-                    # 应用 mask（如果存在）
                     if attention_mask is not None:
                         causal_mask = attention_mask.index_select(dim=2, index=current_indices)  # [B, 1, chunk_q, K_LEN]
                         attn_chunk_h += causal_mask
@@ -495,21 +435,18 @@ def layer_forward(
                     if dtype in (torch.float16, torch.bfloat16):
                         attn_chunk_h = torch.where(torch.isinf(attn_chunk_h), torch.zeros_like(attn_chunk_h), attn_chunk_h)
 
-                    # Softmax 升精度
                     attn_chunk_h = F.softmax(attn_chunk_h, dim=-1, dtype=torch.float32).to(dtype)
                     attn_chunk += attn_chunk_h
                     del attn_chunk_h
-                # # ✅ 转到 CPU，在 H 维度求均值，得到 [B, 1, chunk_q, K_LEN]
                 attn_chunk_cpu = (attn_chunk/H).detach().cpu().float().numpy()  # [B, 1, chunk_q, K_LEN]
                 # print("attn_chunk_cpu shape: ",attn_chunk_cpu.shape)
                 del attn_chunk
                 
-                # # # ✅ 写入结果到 attn_weights (list)
                 for b in range(B):
                     # print(end_i,i)
-                    for j in range(end_i - i):  # 当前 chunk 中的 index
-                        q_idx = current_indices[j].item()  # 原始 query token index
-                        cpu_attn_weight[b][0][q_idx] = attn_chunk_cpu[b, 0, j]  # 存为 numpy array
+                    for j in range(end_i - i): # chunk index
+                        q_idx = current_indices[j].item() # query token index
+                        cpu_attn_weight[b][0][q_idx] = attn_chunk_cpu[b, 0, j] # numpy array
 
                 torch.cuda.empty_cache()
             # cpu_attn_weight = attn_weights.cpu().float().numpy()
@@ -523,8 +460,6 @@ def layer_forward(
         attn_weights = None
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
     attn_output = self.o_proj(attn_output)
-    # 把 attn_weights 暴露到 self_attn 属性上, 让 qwen2_forward 能在
-    # 4.57 (DecoderLayer 返回单 Tensor) 路径下取出 attentions
     self._last_attn_weights = attn_weights
     return attn_output, attn_weights
 
@@ -573,10 +508,6 @@ def qwen2_forward(
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        # -------- mask builder (transformers 版本兼容) --------
-        # 新版 transformers (>=4.46) 移除了 Qwen2Model._update_causal_mask，
-        # 改为模块级 create_causal_mask / create_sliding_window_causal_mask 工具。
-        # 旧版仍然是 self._update_causal_mask。这里做一次兜底探测。
         causal_mask = None
         if hasattr(self, "_update_causal_mask"):
             try:
@@ -590,7 +521,7 @@ def qwen2_forward(
                 from transformers.masking_utils import create_causal_mask as _create_causal_mask  # 4.46+
             except Exception:
                 try:
-                    from transformers.models.qwen2.modeling_qwen2 import create_causal_mask as _create_causal_mask  # 某些版本
+                    from transformers.models.qwen2.modeling_qwen2 import create_causal_mask as _create_causal_mask # 
                 except Exception:
                     _create_causal_mask = None
             if _create_causal_mask is not None:
@@ -605,14 +536,9 @@ def qwen2_forward(
                     )
                 except Exception:
                     causal_mask = None
-                # 4.57 的 create_causal_mask 在 flash/SDPA 路径下可能返回 None
-                # 或 2D 的 padding mask，这会让 layer 内部 eager/chunked 注意力因
-                # 无法与 [B,H,Q,K] 对齐而炸（出现 "tensor a (H) must match b (K) at dim 3"）。
-                # 这里强制要求 4D，否则退到手工构造。
                 if causal_mask is not None and causal_mask.dim() != 4:
                     causal_mask = None
             if causal_mask is None:
-                # 最后的兜底：显式构造 4D causal mask [B,1,Q,KV]
                 bsz, q_len = inputs_embeds.shape[0], inputs_embeds.shape[1]
                 past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
                 kv_len = past_len + q_len
@@ -644,11 +570,6 @@ def qwen2_forward(
                 output_attentions_cp = True
             else:
                 output_attentions_cp = False
-            # 关键: transformers 4.57 的 Qwen2DecoderLayer.forward 不会把
-            # output_attentions 关键字透传到 self.self_attn(...) 的 kwargs,
-            # 所以必须直接在 self_attn 上挂属性, 让我们 monkey-patch 的
-            # layer_forward 能读到这个开关 (否则默认会跑 chunked_attention,
-            # 28 层全部累计 -> CUDA OOM 92 GiB)。
             try:
                 decoder_layer.self_attn._need_attn_weights = output_attentions_cp
             except Exception:
@@ -683,13 +604,8 @@ def qwen2_forward(
                     **flash_attn_kwargs,
                 )
 
-            # 4.57+ 的 Qwen2DecoderLayer.forward 返回单个 Tensor (hidden_states),
-            # 不再返回 (hidden_states, attn_weights) tuple。
-            # 4.56 及以下返回 tuple。这里做兼容判断。
             if isinstance(layer_outputs, torch.Tensor):
                 hidden_states = layer_outputs
-                # output_attentions 在 4.57 上无法从 layer_outputs 拿到, 但我们的 layer_forward 内部
-                # 已经把 attn_weights 算好了; 通过 self_attn 的属性把它带出来
                 if output_attentions_cp:
                     _aw = getattr(decoder_layer.self_attn, "_last_attn_weights", None)
                     if _aw is not None:
@@ -768,19 +684,15 @@ def process_notsave(block_indices, start_k, end_k, attention, input_ids, img_url
         max_att_sum = 0
         for per in range(len(block_indices)):
             if len(block_indices[per]) == 1:
-                #只有缩略图
                 start = [img_start[max_att_sum]]
                 end = [img_end[max_att_sum]]
             else:
-                #去掉最后那个缩略图
                 start = img_start[max_att_sum: max_att_sum + len(block_indices[per]) - 1]
                 end = img_end[max_att_sum: max_att_sum + len(block_indices[per]) - 1]
             max_att_sum += len(block_indices[per])
             layer_sum = []
-            #对每一层做
             for i in range(len(attention)):
                 block_sum = []
-                #计算每一块
                 for block in range(len(start)):
                     k_att_map = []
                     for row in attention[i][0]:
@@ -789,7 +701,6 @@ def process_notsave(block_indices, start_k, end_k, attention, input_ids, img_url
                     attention_map = k_att_map[:,start[block]:end[block]].reshape(-1,16,16).mean(axis=0)
                     block_sum.append(attention_map)
                 # noise_mean = noise_mean/len(start)
-                #还原每一块放在原位的attention
                 if len(block_indices[per]) == 1:
                     block_loc = [0,0]
                 else:
@@ -798,7 +709,6 @@ def process_notsave(block_indices, start_k, end_k, attention, input_ids, img_url
                 for block in range(len(start)):
                     attention_map[block_indices[per][block][1]*16: (block_indices[per][block][1]+1)*16, block_indices[per][block][0]*16: (block_indices[per][block][0]+1)*16] = block_sum[block]
                 layer_sum.append(attention_map)
-            #对比找到最大attention的map
             mean_layer_sum = np.array(layer_sum).mean(axis=0,keepdims=True)
             sum_per_img_att = mean_layer_sum.max()
             # print(sum_per_img_att)
@@ -836,35 +746,30 @@ def extract_cluster_boxes_normalized(
     eps_normalized=0.1, 
     min_samples=2):
     """
-    输入:
-        attention_map: 二维 numpy array (H, W)，值为 [0~1]
-        eps_normalized: 归一化的最大邻域距离，范围 [0, 1]，表示相对于图像对角线
-        min_samples: 成为一个簇所需的最小样本数
+    :
+        attention_map: numpy array (H, W) [0~1]
+        eps_normalized: [0, 1]
+        min_samples: 
     
-    输出:
-        cluster_boxes: 每个聚类对应的最小外接矩形列表 [(x_min, y_min, x_max, y_max), ...]
+    :
+        cluster_boxes: [(x_min, y_min, x_max, y_max), ...]
     """
     H, W = attention_map.shape
 
-    # Step 1: 提取所有非零点的坐标
-    coords = np.column_stack(np.where(attention_map > 0.5))  # 使用阈值提取前景点
+    coords = np.column_stack(np.where(attention_map > 0.5)) # 
 
     if len(coords) == 0:
         return []
 
-    # Step 2: 计算图像对角线长度，用于归一化 eps
     diag_length = np.sqrt(H**2 + W**2)
-    eps_actual = diag_length * eps_normalized  # 把归一化 eps 转换为实际像素距离
+    eps_actual = diag_length * eps_normalized # eps 
 
-    # Step 3: 使用 DBSCAN 聚类
     clustering = DBSCAN(eps=eps_actual, min_samples=min_samples).fit(coords)
     labels = clustering.labels_
     unique_labels = set(labels)
-    n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)  # 忽略噪声点
+    n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0) # 
 
-    # print(f"找到 {n_clusters} 个聚类")
 
-    # Step 4: 对每个聚类提取最小外接矩形
     cluster_boxes = []
     for label in range(n_clusters):
         idxs = coords[labels == label]
@@ -876,24 +781,22 @@ def extract_cluster_boxes_normalized(
 
 def merge_duplicate_boxes_to_dict_avg(data, iou_threshold=0.5):
     """
-    将所有重叠的 box 聚类合并，并归属到最后出现的 seq_id。
-    合并方式为：对每个聚类内的 box 取平均值。
+     box seq_id
+     box 
     
-    参数:
+    :
         data: dict {seq_id: [box1, box2, ...]}
         iou_threshold: float
     
-    返回:
+    :
         dict {final_seq_id: [merged_box1, merged_box2, ...]}
     """
 
-    # Step 1: 所有 box 放入 flat list 并记录原始 seq_id
     all_boxes = []
     for seq_id, boxes in data.items():
         for box in boxes:
             all_boxes.append((seq_id, box))
 
-    # Step 2: 初始化 Union-Find 数据结构（用于聚类）
     parent = list(range(len(all_boxes)))
 
     def find(i):
@@ -906,7 +809,6 @@ def merge_duplicate_boxes_to_dict_avg(data, iou_threshold=0.5):
         if pi != pj:
             parent[pi] = pj
 
-    # Step 3: 根据 IOU 构建图连接关系（Union 所有重合的 box）
     n = len(all_boxes)
     for i in range(n):
         for j in range(i + 1, n):
@@ -914,7 +816,6 @@ def merge_duplicate_boxes_to_dict_avg(data, iou_threshold=0.5):
             if iou > iou_threshold:
                 union(i, j)
 
-    # Step 4: 按照聚类分组，取平均 box，并记录最大 seq_id
     clusters = defaultdict(list)
     for idx, (seq_id, box) in enumerate(all_boxes):
         root = find(idx)
@@ -927,12 +828,10 @@ def merge_duplicate_boxes_to_dict_avg(data, iou_threshold=0.5):
         avg_box = average_boxes(boxes_in_cluster)
         merged_results.append((final_seq_id, avg_box))
 
-    # Step 5: 构建输出 dict
     result = defaultdict(list)
     for seq_id, box in merged_results:
-        result[seq_id].append(tuple(round(c, 6) for c in box))  # 四舍五入便于去重
+        result[seq_id].append(tuple(round(c, 6) for c in box)) # 
 
-    # 对每个 seq_id 下的 box 去重
     for seq_id in result:
         seen = set()
         unique_boxes = []
@@ -943,7 +842,6 @@ def merge_duplicate_boxes_to_dict_avg(data, iou_threshold=0.5):
                 unique_boxes.append(box)
         result[seq_id] = unique_boxes
 
-    # 按 seq_id 排序返回
     return dict(sorted(result.items()))
 
 def Add_box_border(mbbox, radius=0.05):
@@ -960,13 +858,11 @@ def compute_iou(box1, box2):
     x1_1, y1_1, x2_1, y2_1 = box1
     x1_2, y1_2, x2_2, y2_2 = box2
 
-    # 确保 x1 < x2, y1 < y2
     x1_1, x2_1 = sorted([x1_1, x2_1])
     y1_1, y2_1 = sorted([y1_1, y2_1])
     x1_2, x2_2 = sorted([x1_2, x2_2])
     y1_2, y2_2 = sorted([y1_2, y2_2])
 
-    # 计算交集区域
     inter_x1 = max(x1_1, x1_2)
     inter_y1 = max(y1_1, y1_2)
     inter_x2 = min(x2_1, x2_2)
@@ -989,7 +885,7 @@ def compute_iou(box1, box2):
 
 def average_boxes(boxes):
     """
-    计算一组 bounding boxes 的平均 box
+     bounding boxes box
     """
     n = len(boxes)
     sum_x1 = sum(box[0] for box in boxes)
@@ -1005,7 +901,7 @@ def average_boxes(boxes):
     return (avg_x1, avg_y1, avg_x2, avg_y2)
 
 def place_on_center(canvas_bgra, content_bgra):
-    """一个辅助函数，将 content 图像(BGRA)居中放置在 canvas 画布(BGRA)上"""
+    """ content (BGRA) canvas (BGRA)"""
     canvas_h, canvas_w, _ = canvas_bgra.shape
     content_h, content_w, _ = content_bgra.shape
 
@@ -1018,16 +914,13 @@ def place_on_center(canvas_bgra, content_bgra):
     paste_x = (canvas_w - content_w) // 2
     paste_y = (canvas_h - content_h) // 2
     
-    # 使用Alpha通道作为蒙版来粘贴
     alpha_mask = content_bgra[:, :, 3] / 255.0
     
-    # 遍历每个颜色通道
     for c in range(0, 3):
         canvas_bgra[paste_y:paste_y+content_h, paste_x:paste_x+content_w, c] = \
             alpha_mask * content_bgra[:, :, c] + \
             (1 - alpha_mask) * canvas_bgra[paste_y:paste_y+content_h, paste_x:paste_x+content_w, c]
             
-    # 更新画布的alpha通道
     canvas_bgra[paste_y:paste_y+content_h, paste_x:paste_x+content_w, 3] = \
         np.maximum(canvas_bgra[paste_y:paste_y+content_h, paste_x:paste_x+content_w, 3], content_bgra[:, :, 3])
         
@@ -1035,12 +928,12 @@ def place_on_center(canvas_bgra, content_bgra):
 
 def swap_and_rebuild_dict(nested_dict):
     """
-    将两层嵌套字典的内外层 key 对调。
+     key 
     
-    输入:
-        nested_dict: 形如 {outer_key: {inner_key: value}}
-    输出:
-        new_dict: 形如 {inner_key: {outer_key: value}}
+    :
+        nested_dict: {outer_key: {inner_key: value}}
+    :
+        new_dict: {inner_key: {outer_key: value}}
     """
     new_dict = {}
 
@@ -1054,57 +947,46 @@ def swap_and_rebuild_dict(nested_dict):
 
 def pil_to_base64(pil_img, format="PNG"):
     buffered = BytesIO()
-    # 如果 pil_img.format 不存在，使用指定的默认格式
     img_format = pil_img.format if pil_img.format else format
-    pil_img.save(buffered, format=img_format)  # 使用指定格式保存图像到内存
+    pil_img.save(buffered, format=img_format) # 
     encoded_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return f"data:image;base64,{encoded_str}"
 
 
 def decompose_bbox_by_alpha(image_bgra, bbox, alpha_threshold=10):
     """
-    将单个BBox根据其Alpha通道分解为多个不包含透明区域的子BBox。
+    BBoxAlphaBBox
 
     Args:
-        image_bgra (np.array): 4通道的BGRA格式图像。
-        bbox (list or tuple): 单个边界框 [x0, y0, x1, y1]。
-        alpha_threshold (int): 用于判断像素是否透明的阈值。
-                               高于此值的Alpha被认为是不透明的。
+        image_bgra (np.array): 4BGRA
+        bbox (list or tuple): [x0, y0, x1, y1]
+        alpha_threshold (int): 
+                               Alpha
 
     Returns:
-        list: 一个包含多个子BBox [x, y, w, h] 的列表。
-              如果BBox内没有不透明区域，则返回空列表。
+        list: BBox [x, y, w, h] 
+              BBox
     """
     x0, y0, x1, y1 = bbox
     img_h, img_w, _ = image_bgra.shape
 
-    # 确保BBox坐标在图像范围内
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(img_w, x1), min(img_h, y1)
 
     if x0 >= x1 or y0 >= y1:
         return []
 
-    # 1. 提取BBox内的区域，并获取其Alpha通道
     roi = image_bgra[y0:y1, x0:x1]
-    alpha_channel = roi[:, :, 3]  # BGRA格式的Alpha通道在索引3
+    alpha_channel = roi[:, :, 3] # BGRAAlpha3
 
-    # 2. 二值化Alpha通道
-    # 使用cv2.THRESH_BINARY，高于阈值的像素变为255，否则为0
     _, mask = cv2.threshold(alpha_channel, alpha_threshold, 255, cv2.THRESH_BINARY)
 
-    # 3. 寻找轮廓
-    # cv2.RETR_EXTERNAL 只检测最外层的轮廓，这正是我们需要的
-    # cv2.CHAIN_APPROX_SIMPLE 压缩轮廓，节省内存
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 4. 将轮廓转换为BBox
     sub_bboxes = []
     for contour in contours:
-        # 计算轮廓的边界框 (x, y, w, h)
         sub_x, sub_y, sub_w, sub_h = cv2.boundingRect(contour)
         
-        # 将子BBox的相对坐标转换回原图的绝对坐标
         abs_x0 = x0 + sub_x
         abs_y0 = y0 + sub_y
         abs_x1 = abs_x0 + sub_w
@@ -1116,19 +998,18 @@ def decompose_bbox_by_alpha(image_bgra, bbox, alpha_threshold=10):
 
 def merge_overlapping_bboxes(bboxes):
     """
-    合并列表中所有重叠的BBox。
+    BBox
 
     Args:
-        bboxes (list): 一个包含多个BBox [x0, y0, x1, y1] 的列表。
+        bboxes (list): BBox [x0, y0, x1, y1] 
 
     Returns:
-        list: 一个新的BBox列表，其中所有重叠的BBox已被合并。
+        list: BBoxBBox
     """
     if not bboxes:
         return []
 
-    # 使用索引来操作，避免在迭代时修改列表
-    bboxes = [list(b) for b in bboxes] # 确保是可修改的列表
+    bboxes = [list(b) for b in bboxes] # 
 
     while True:
         merged_one = False
@@ -1139,36 +1020,30 @@ def merge_overlapping_bboxes(bboxes):
                 box1 = bboxes[i]
                 box2 = bboxes[j]
 
-                # 检查是否重叠
-                # 如果一个box的右边在另一个的左边之外，或者上边在下边之外，则不重叠
-                is_overlapping = not (box1[2] < box2[0] or  # box1在box2左侧
-                                      box1[0] > box2[2] or  # box1在box2右侧
-                                      box1[3] < box2[1] or  # box1在box2上方
-                                      box1[1] > box2[3])   # box1在box2下方
+                is_overlapping = not (box1[2] < box2[0] or # box1box2
+                                      box1[0] > box2[2] or # box1box2
+                                      box1[3] < box2[1] or # box1box2
+                                      box1[1] > box2[3]) # box1box2
 
                 if is_overlapping:
-                    # 合并两个BBox
                     new_x0 = min(box1[0], box2[0])
                     new_y0 = min(box1[1], box2[1])
                     new_x1 = max(box1[2], box2[2])
                     new_y1 = max(box1[3], box2[3])
                     
-                    # 用合并后的大BBox替换第一个，并删除第二个
                     bboxes[i] = [new_x0, new_y0, new_x1, new_y1]
                     bboxes.pop(j)
                     
-                    # 因为我们合并了，需要从头开始重新检查
                     merged_one = True
-                    break # 跳出内层j循环
+                    break # j
                 else:
                     j += 1
             
             if merged_one:
-                break # 跳出外层i循环，重新开始while True
+                break # iwhile True
             else:
                 i += 1
         
-        # 如果完整遍历一次后没有任何合并发生，则结束
         if not merged_one:
             break
             
@@ -1179,28 +1054,26 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
                                           draw_color_border=True,
                                           border_thickness=2):
     """
-    将 BBox 区域紧凑排列（保留相对位置），然后居中放置在透明背景上。
+     BBox 
 
-    新增功能（GRACE / InternVL）:
-      - n (int): 一个阈值。找出所有被至少 n 个 BBox 覆盖的区域，
-                然后返回所有与这些区域有交集的原始 BBox 的并集。
+    GRACE / InternVL:
+      - n (int): n BBox 
+                 BBox 
       - overlay_bboxes (list[dict] | None):
-            覆盖层 bbox 列表，每个元素 {"bbox_norm": [x0,y0,x1,y1], "color": (R,G,B), "label": "entity name"}
-            不影响 LPD 裁剪/紧凑布局，仅在紧凑画布上按像素映射绘制彩色细边框。
-      - draw_color_border (bool): 是否绘制彩色边框（作用于 overlay_bboxes）。
-      - border_thickness (int): 边框像素厚度。
+             bbox {"bbox_norm": [x0,y0,x1,y1], "color": (R,G,B), "label": "entity name"}
+             LPD /
+      - draw_color_border (bool): overlay_bboxes
+      - border_thickness (int): 
 
-    兼容性说明:
-      - 返回值由原来的 `(pil_img, return_norm_bboxes)` 扩展为
+    :
+      - `(pil_img, return_norm_bboxes)` 
         `(pil_img, return_norm_bboxes, used_colors_labels)`。
-        旧调用方（baseline TAD）解包前两项即可，`used_colors_labels` 为空列表时
-        与原行为一致，不影响原功能。
+        baseline TAD`used_colors_labels` 
+        
 
     Returns:
         (pil_result, return_norm_bboxes, used_colors_labels)
     """
-    # ✅ 1. 统一转换为4通道BGRA格式
-    # 支持: PIL.Image 对象 / base64 字符串 / 文件路径
     if isinstance(image, str):
         if image.startswith('data:image;base64,'):
             image64 = image.split(',')[1]
@@ -1209,7 +1082,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
         elif os.path.exists(image):
             pil_img = Image.open(image).convert("RGBA")
         else:
-            # 裸 base64（无前缀）
             image_data = base64.b64decode(image)
             pil_img = Image.open(io.BytesIO(image_data)).convert("RGBA")
     else:
@@ -1217,11 +1089,9 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
     img_cv_bgra = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGBA2BGRA)
     img_h, img_w, _ = img_cv_bgra.shape
 
-    # ✅ 2. 修复空BBox情况的返回值
     if not normalized_bboxes:
         return None, [], []
         
-    # --- 坐标转换 ---
     initial_pixel_bboxes = []
     for n_box in normalized_bboxes:
         nx0, ny0, nx1, ny1 = n_box
@@ -1229,23 +1099,18 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
         x1, y1 = int(nx1 * img_w), int(ny1 * img_h)
         initial_pixel_bboxes.append([x0, y0, x1, y1])
 
-    # --- 修正后的逻辑：基于重叠阈值 n 筛选贡献BBox的并集 ---
     
-    # 步骤 1: 创建重叠计数图，识别高置信度像素区域
     overlap_map = np.zeros((img_h, img_w), dtype=np.uint16)
     for bbox in initial_pixel_bboxes:
         x0, y0, x1, y1 = bbox
         if x0 < x1 and y0 < y1:
             overlap_map[y0:y1, x0:x1] += 1
     
-    # 根据阈值 n 创建高置信度区域的二元掩码
     threshold_mask = (overlap_map >= n)
     
-    # 如果没有任何区域满足阈值，则返回空
     if not np.any(threshold_mask):
          return None, [], []
 
-    # 步骤 2: 查找所有与高置信度区域有交集的原始BBox
     contributing_bboxes = []
     for bbox in initial_pixel_bboxes:
         x0, y0, x1, y1 = bbox
@@ -1255,28 +1120,20 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
     if not contributing_bboxes:
         return None, [], []
 
-    # 步骤 3: 计算所有贡献BBox的并集
     final_merged_bboxes = merge_overlapping_bboxes(contributing_bboxes)
     
-    # 使用这个最终合并后的BBox列表进行后续操作
     bboxes = np.array(final_merged_bboxes, dtype=int)
-    # --- 筛选逻辑结束 ---
 
-    # --- 新增的分解步骤 (可以保留，作用于最终的并集区域) ---
     decomposed_bboxes = []
     for bbox in bboxes:
-        # 对每个初始BBox进行分解
         sub_bboxes = decompose_bbox_by_alpha(img_cv_bgra, bbox)
         decomposed_bboxes.extend(sub_bboxes)
     
     if not decomposed_bboxes:
         return None, [], []
 
-    # 使用分解后的BBox列表进行后续操作
     bboxes = np.array(decomposed_bboxes, dtype=int)
-    # --- 分解结束 ---
 
-    # ✅ 3. 您的 "bbox_only_region.png" 逻辑，现在作用于最终筛选出的区域
     masked_img_bgra = np.zeros_like(img_cv_bgra) 
     for x0, y0, x1, y1 in bboxes:
         x0_c, y0_c = max(0, x0), max(0, y0)
@@ -1288,7 +1145,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
     pil_result_masked = Image.fromarray(masked_img_rgba)
     pil_result_masked.save(f"{img_nums}_{imgidx}_result_transparent_bg.png")
 
-    # --- 紧凑排列逻辑 (逻辑不变) ---
     x_coords = sorted(list(set(bboxes[:, [0, 2]].flatten())))
     y_coords = sorted(list(set(bboxes[:, [1, 3]].flatten())))
 
@@ -1310,7 +1166,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
     y_map[y_coords[-1]] = new_y
     new_total_height = new_y
 
-    # ── 构建原图 → 紧凑图的像素级映射数组（便于 overlay_bboxes 精准映射） ──
     x_pix_map = np.full(img_w + 1, -1, dtype=np.int32)
     y_pix_map = np.full(img_h + 1, -1, dtype=np.int32)
     for i in range(len(x_coords) - 1):
@@ -1326,7 +1181,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
                 y_pix_map[yy] = y_map[sy] + (yy - sy)
     y_pix_map[y_coords[-1]] = y_map[y_coords[-1]] if y_coords else 0
 
-    # ✅ 4. 创建4通道透明画布，并从4通道源图粘贴
     composite_image_bgra = np.zeros((new_total_height, new_total_width, 4), dtype=np.uint8)
     # ori_area = img_w*img_h
     # return_bboxes = []
@@ -1342,7 +1196,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
         h, w, _ = roi.shape
         composite_image_bgra[paste_y : paste_y + h, paste_x : paste_x + w] = roi
 
-    # ── overlay_bboxes：在紧凑画布上根据像素映射绘制彩色边框（GRACE 专用） ──
     used_colors_labels = []
     _seen_color_label = set()
     if draw_color_border and overlay_bboxes:
@@ -1414,7 +1267,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
                 used_colors_labels.append((c, label))
         composite_image_bgra = cv2.cvtColor(np.array(_pil_comp), cv2.COLOR_RGBA2BGRA)
 
-    # ✅ 5. 创建最终的4通道透明画布，并居中粘贴
     final_canvas_bgra = np.zeros((img_h, img_w, 4), dtype=np.uint8)
     final_img_bgra = place_on_center(final_canvas_bgra, composite_image_bgra)
     
@@ -1422,7 +1274,6 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
     pil_result_centered = Image.fromarray(final_img_rgba)
     pil_result_centered.save(f"{img_nums}_{imgidx}_result_transparent_bg_center.png")
 
-    # ✅ 6. 对紧凑图进行缩放和返回
     composite_image_rgba = cv2.cvtColor(composite_image_bgra, cv2.COLOR_BGRA2RGBA)
     pil_result = Image.fromarray(composite_image_rgba)
 
@@ -1438,47 +1289,39 @@ def compact_and_center_with_relative_pos(imgidx, img_nums, image, normalized_bbo
 
 def hot_attention_map_show(image, attention_map, bounding_boxes=None, alpha=0.5, save=None):
     """
-    在图像上叠加注意力热力图，并可选地绘制与注意力图等比缩放的边界框。
-    新增功能：显示 colorbar 表示注意力值（0~1），使用发散色系突出中值 0.5。
+    
+     colorbar 0~1 0.5
 
     Args:
-        image (np.array): 原始图像，形状为 (H, W, 3)，值范围 [0,1] 或 [0,255]
-        attention_map (np.array): 注意力图，形状为 (h, w)，值范围建议 [0,1]
+        image (np.array): (H, W, 3) [0,1] [0,255]
+        attention_map (np.array): (h, w) [0,1]
         bounding_boxes (list, optional): 
-            边界框列表，每个为 [x0, y0, x1, y1]，基于 attention_map 尺寸。
-            自动缩放到图像尺寸。默认 None。
-        alpha (float, optional): 热力图透明度。默认 0.5。
-        save (str, optional): 保存路径。若为 None，则显示图像。
+             [x0, y0, x1, y1] attention_map 
+             None
+        alpha (float, optional): 0.5
+        save (str, optional): None
     """
     img_height, img_width, _ = image.shape
     attn_height, attn_width = attention_map.shape
 
-    # 计算缩放因子
     zoom_h = img_height / attn_height
     zoom_w = img_width / attn_width
 
-    # 缩放注意力图到图像尺寸
     attention_resized = zoom(attention_map, (zoom_h, zoom_w))
 
-    # 创建绘图
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(20, 20))
     ax.imshow(image)
 
-    # 使用发散色图：RdYlBu_r（红-黄-蓝反向），0.5 对应黄色/白色，非常清晰
-    # 其他可选：'RdBu', 'PiYG', 'coolwarm'
     cmap = 'hot'
 
-    # 叠加注意力热力图
     im = ax.imshow(attention_resized, cmap=cmap, alpha=alpha)
 
-    # 添加 colorbar
     cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
     cbar.set_label('Attention Score', fontsize=16)
     cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
     cbar.set_ticklabels(['0.0', '0.25', '0.5', '0.75', '1.0'])
     cbar.ax.tick_params(labelsize=14)
 
-    # 绘制边界框（如果提供）
     if bounding_boxes:
         for box in bounding_boxes:
             x0, y0, x1, y1 = box
@@ -1494,20 +1337,17 @@ def hot_attention_map_show(image, attention_map, bounding_boxes=None, alpha=0.5,
                 width,
                 height,
                 linewidth=8,
-                edgecolor='lime',    # 高对比度颜色：荧光绿
+                edgecolor='lime', # 
                 facecolor='none',
                 linestyle='-',
                 alpha=0.9
             )
             ax.add_patch(rect)
 
-    # 关闭坐标轴
     ax.axis('off')
 
-    # 紧凑布局
     fig.tight_layout(pad=0)
 
-    # 保存或显示
     if save:
         plt.savefig(save, bbox_inches='tight', pad_inches=0, dpi=100)
         plt.close(fig)
@@ -1522,18 +1362,18 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
                                   sample_id="sample",
                                   entity_text="",
                                   return_hide_copy=False):
-    """扩展支持 GRACE：
-      - sam3_supplement_bboxes_per_img: dict[img_idx] -> list[[x0,y0,x1,y1]] 归一化坐标
-      - sam3_entity_labels_per_img: dict[img_idx] -> list[str] 与 bbox 等长
-      - heatmap_save_dir / sample_id: 非 None 时将聚合注意力热力图落盘为
+    """ GRACE
+      - sam3_supplement_bboxes_per_img: dict[img_idx] -> list[[x0,y0,x1,y1]] 
+      - sam3_entity_labels_per_img: dict[img_idx] -> list[str] bbox 
+      - heatmap_save_dir / sample_id: None 
           {sample_id}_img{img_idx}_s{sigma}_t{thresh}_agg_heatmap.png
-      - entity_text: 仅用于 heatmap 的 title
-      - return_hide_copy: 是否额外返回一套不含 SAM3 overlay 的纯 HiDe LPD 图
+      - entity_text: heatmap title
+      - return_hide_copy: SAM3 overlay HiDe LPD 
 
-    返回:
-        若 return_hide_copy=False（向后兼容）:
+    :
+         return_hide_copy=False:
             img_merged_boxes, crop_list, words_lines, highlight_imgs, bounding_boxes
-        否则:
+        :
             img_merged_boxes, crop_list, words_lines, highlight_imgs, bounding_boxes, hide_highlight_imgs
     """
     pixel_values,input_ids,attention_mask,generation_config = get_input(model, tokenizer, pixel_values, question, generation_config, history=None, return_history=True)
@@ -1544,7 +1384,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
     end_k = end_ques
     accept_att = process_notsave(block_indices, start_k, end_k, attention, input_ids, img_url, img_start, img_end, sig)
 
-    # ── 保存初版聚合热力图 (尚未有 att bbox, 仅叠 SAM3 bbox) ────────────
     if heatmap_save_dir is not None:
         try:
             os.makedirs(heatmap_save_dir, exist_ok=True)
@@ -1571,7 +1410,7 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
                     title=f"[{sample_id}] Aggregated Attn | s={sig} t={thre:.2f} | {entity_text[:60]}",
                 )
         except Exception as _e:
-            print(f"[heatmap] 初版保存失败: {_e}")
+            print(f"[heatmap] : {_e}")
     # print(accept_att)
     imgs_words_att_box = {}
     for img_idx in accept_att:
@@ -1587,12 +1426,10 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
             # att_map = att_map-att_map.min()
             # att_map = att_map/att_map.max()
             # hot_attention_map_show(image,att_map,save=f'{img_idx}_{word}_{dicts[inputs["input_ids"][0][word].cpu().item()].replace(r"/",r"[]")}_{np.std(att_map):.06f}_{calculate_attention_entropy(att_map):.06f}.png')
-            #去掉后50%的信号
             # threshold = np.percentile(att_map, 75)
             # att_map = np.where(att_map < threshold, 0, att_map)
             boxs, rigion_nums = find_top_n_attended_regions(att_map, 100, thre)
             # att_map[att_map<0.5] = 0
-            #将这个保存下来为图片，用PIL
             # max_val_coords = np.unravel_index(np.argmax(att_map), att_map.shape)
             # hot_attention_map_show(image,att_map,save=f'{img_idx}_{word}_{dicts[inputs["input_ids"][0][word].cpu().item()].replace(r"/",r"[]")}_threshold_{np.std(att_map):.06f}_{calculate_attention_entropy(att_map):.06f}.png')
             # binarized_map = att_map >= 0.5
@@ -1601,7 +1438,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
             # regions = regionprops(labeled_map)
             # for region in regions:
             #     if region.label == target_label:
-                    # region.bbox 返回 (y0, x0, y1, x1)
                     # y0,x0,y1,x1 = region.bbox
                     # boxs = [[x0,y0,x1,y1]]
             # boxs = extract_cluster_boxes_normalized(att_map)
@@ -1621,7 +1457,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
                     box_area = (x1 - x0) * (y1 - y0)
                     # if not (min_area <= box_area):
                     #     continue
-                    # 计算 box 面积
                     bbox_norm = (x0 / W, y0 / H, x1 / W, y1 / H)
                     # Ambbox = Add_box_border(bbox_norm,radius=0.05)
                     Ambbox = bbox_norm
@@ -1695,7 +1530,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
             for boxid in range(len(img_merged_boxes[word][imgidx])):
                 bounding_boxes[imgidx].append(img_merged_boxes[word][imgidx][boxid])
 
-    # ── 保存原始注意力 bbox 副本(用于覆盖 heatmap, 不受 LPD/SAM3 合并影响) ──
     original_att_bboxes = {}
     for _imgidx in bounding_boxes:
         try:
@@ -1705,7 +1539,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
         except Exception:
             original_att_bboxes[_imgidx] = [list(b) for b in bounding_boxes[_imgidx]]
 
-    # ── GRACE: 保留一套纯 HiDe LPD 副本（不含 SAM3 overlay）────────────
     if (enable_grace or return_hide_copy):
         _hide_bounds = {k: [list(b) for b in v] for k, v in bounding_boxes.items()}
         for _imgidx, _boxes in _hide_bounds.items():
@@ -1718,7 +1551,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
             if _hi_img is not None:
                 hide_highlight_imgs.append(_hi_img)
 
-    # ── GRACE: 构建 overlay_bboxes_per_img（SAM3 bbox 作为独立 overlay） ──
     overlay_bboxes_per_img = {}
     extra_legend_entries = []
     if enable_grace and sam3_supplement_bboxes_per_img:
@@ -1767,7 +1599,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
         bounding_boxes[imgidx] = bboxs
         if img is None:
             continue
-        # 若为 GRACE 且有 overlay/legend 条目，追加图注
         if enable_grace and (used_colors_labels or extra_legend_entries):
             _seen = set()
             merged_legend = []
@@ -1782,7 +1613,6 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
         # highlight_imgs.append(compact_and_center_with_relative_pos(imgidx,len(img_url),img_url[imgidx],bounding_boxes[imgidx]))
         # highlight_imgs.append(compact_and_center_with_relative_pos_in_ori(image_list[imgidx],bounding_boxes[imgidx]))
 
-    # ── 覆盖保存带 att bbox + SAM3 bbox 的聚合热力图 ─────────────────
     if heatmap_save_dir is not None:
         try:
             for _img_idx in accept_att:
@@ -1809,7 +1639,7 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
                     title=f"[{sample_id}] Attn Heatmap | s={sig} t={thre:.2f} | {entity_text[:60]}",
                 )
         except Exception as _e:
-            print(f"[heatmap] 覆盖保存失败: {_e}")
+            print(f"[heatmap] : {_e}")
 
     if return_hide_copy or enable_grace:
         return img_merged_boxes,crop_list,words_lines,highlight_imgs,bounding_boxes,hide_highlight_imgs
@@ -1817,60 +1647,52 @@ def from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, 
 
 def find_top_n_attended_regions(att_map, n, threshold=0.5):
     """
-    从注意力图中找到前n个最受关注的连通区域。
+    n
 
-    这个函数通过以下步骤工作：
-    1. 使用阈值对注意力图进行二值化，以识别高关注度区域。
-    2. 对二值化图进行连通域分析，找到所有独立的区域。
-    3. 为每个区域计算一个“关注度分数”（区域内所有注意力值的总和）。
-    4. 根据分数对所有区域进行降序排序。
-    5. 返回排名前n的区域的边界框。如果总区域数小于n，则返回所有区域。
+    
+    1. 
+    2. 
+    3. 
+    4. 
+    5. nn
 
-    参数:
-    att_map (np.ndarray): 二维的注意力图，值通常在0到1之间。
-    n (int): 需要寻找的顶部区域的数量。
-    threshold (float, optional): 用于二值化的阈值。默认为 0.5。
+    :
+    att_map (np.ndarray): 01
+    n (int): 
+    threshold (float, optional): 0.5
 
-    返回:
-    list: 一个包含边界框的列表。每个边界框格式为 [x_min, y_min, x_max, y_max]。
-          列表按关注度分数降序排列。
+    :
+    list: [x_min, y_min, x_max, y_max]
+          
     """
-    # 1. 二值化处理和连通域分析（与原代码相同）
     map_area = att_map.shape[0] * att_map.shape[1]
     binarized_map = att_map >= threshold
-    if not np.any(binarized_map):  # 如果阈值化后没有任何区域，直接返回空列表
+    if not np.any(binarized_map): # 
         return [],0
         
     labeled_map = label(binarized_map, connectivity=2)
     regions = regionprops(labeled_map)
 
-    # 2. 为每个区域计算分数并存储
     scored_regions = []
     for region in regions:
-        # 创建一个与att_map同样大小的掩码，其中只有当前区域为True
         mask = (labeled_map == region.label)
-        # 计算该区域内所有像素在原始att_map上的注意力值总和作为分数
         score = np.sum(att_map[mask])
         scored_regions.append({
             'score': score,
-            'bbox': region.bbox  # bbox格式为 (y0, x0, y1, x1)
+            'bbox': region.bbox # bbox (y0, x0, y1, x1)
         })
         # if 0 == region.bbox[0] and 0 == region.bbox[1]: return [],0
 
-    # 3. 根据分数对区域进行降序排序
     sorted_regions = sorted(scored_regions, key=lambda r: r['score'], reverse=True)
 
-    # # 4. 选择前n个区域（如果不够n个，则全选）
     # if n > len(sorted_regions):
     #     n = len(sorted_regions)
     # top_n_regions = sorted_regions[:n]
 
     final_boxes = []
-    # 5. 提取并格式化边界框
     get_num = 0
     for region in sorted_regions:
         y0, x0, y1, x1 = region['bbox']
-        # 转换为 [x_min, y_min, x_max, y_max] 格式
         box_area = (y1-y0) * (x1-x0)
         # if box_area/map_area < 0.001:
         #     continue
@@ -1886,7 +1708,6 @@ def find_top_n_attended_regions(att_map, n, threshold=0.5):
     return final_boxes, len(final_boxes)
 
 def once_cot_infer(model,tokenizer,pixel_values,block_indices,question,generation_config, img_url,sig,thre):
-    #得到att
 
     prompt_ques = """Your task is to extract entities from a user's question. You must follow a strict set of rules to deconstruct and reformat these entities into a canonical, attribute-based format. The output should be a single line of comma-separated values.
 
@@ -2011,7 +1832,6 @@ Now, extract entities from the question: """
     # print(prompt_output_text)
     attention,idx2word_dicts,img_start,img_end = messages2att(model, tokenizer, pixel_values, "Search the following entities in the images: "+prompt_output_text, generation_config, history=None, return_history=True)  # Retrieve attention from model outputs
     img_merged_boxes,crop_list,words_lines,highlight_imgs,bounding_boxes = from_img_and_att_get_cropbox(model, tokenizer, pixel_values, block_indices, "Search the following entities in the images: "+prompt_output_text, generation_config,attention, idx2word_dicts, img_url, img_start, img_end, end_ques,sig,thre, history=None, return_history=True)
-    #加上这次处理新出的图
     # print(highlight_imgs)
     for h_img in highlight_imgs:
         # print(h_img)
@@ -2024,9 +1844,9 @@ Now, extract entities from the question: """
 
 def create_directory(path):
     """
-    创建给定路径的目录，包括所有必要的父目录。
+    
 
-    :param path: 完整的目录路径字符串
+    :param path: 
     """
     try:
         os.makedirs(path, exist_ok=True)
@@ -2056,13 +1876,13 @@ def load_dataset_Vstar_json(path):
 def serialize_dict(my_dict, file_path):
 
     """
-    将一个字典序列化为一行 JSON，追加写入到 .jsonl 文件。
+     JSON .jsonl 
     
-    每次调用写入一行，不换行嵌套，符合 JSONL 标准。
+     JSONL 
     
-    参数:
-        my_dict: 要写入的字典（可能包含 ndarray、np.int64 等）
-        file_path: 输出的 .jsonl 文件路径
+    :
+        my_dict: ndarraynp.int64 
+        file_path: .jsonl 
     """
     def serialize_obj(obj):
         if isinstance(obj, np.ndarray):
@@ -2076,16 +1896,13 @@ def serialize_dict(my_dict, file_path):
         else:
             return obj
 
-    # 序列化整个字典
     serialized_dict = serialize_obj(my_dict)
 
-    # 追加写入一行 JSON
     with open(file_path, 'a', encoding='utf-8') as f:
         f.write(json.dumps(serialized_dict, ensure_ascii=False, indent=4) + '\n')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# GRACE / Router 相关工具函数（InternVL3 版；追加于 2026-05 以支持 Router+GRACE）
 # ═══════════════════════════════════════════════════════════════════════════
 import re as _re_grace
 import math as _math_grace
@@ -2096,25 +1913,24 @@ except Exception:   # pragma: no cover
     http_requests = None
 
 
-# ── 颜色调色盘 ───────────────────────────────────────────────────────────────
 _LEGEND_PALETTE = [
-    (255, 140, 0),     # 橙
-    (0, 191, 255),     # 天蓝青
-    (255, 105, 180),   # 亮粉
-    (138, 43, 226),    # 紫
-    (255, 215, 0),     # 金黄
-    (60, 179, 113),    # 中海绿
-    (220, 20, 60),     # 深红
-    (100, 149, 237),   # 矢车菊蓝
-    (255, 69, 0),      # 红橙
-    (0, 206, 209),     # 深青
-    (186, 85, 211),    # 兰花紫
-    (154, 205, 50),    # 黄绿
+    (255, 140, 0), # 
+    (0, 191, 255), # 
+    (255, 105, 180), # 
+    (138, 43, 226), # 
+    (255, 215, 0), # 
+    (60, 179, 113), # 
+    (220, 20, 60), # 
+    (100, 149, 237), # 
+    (255, 69, 0), # 
+    (0, 206, 209), # 
+    (186, 85, 211), # 
+    (154, 205, 50), # 
 ]
 
 
 def assign_entity_colors(entity_labels):
-    """同名实体共享同色；返回 (label2color, bbox_colors)。"""
+    """ (label2color, bbox_colors)"""
     label2color = {}
     bbox_colors = []
     for lb in entity_labels:
@@ -2126,7 +1942,7 @@ def assign_entity_colors(entity_labels):
 
 
 def _get_pil_font(size: int):
-    """尝试加载系统字体；失败时返回 PIL 默认字体。"""
+    """ PIL """
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -2146,7 +1962,7 @@ def _get_pil_font(size: int):
 
 
 def _ensure_pil_rgba(img_or_path):
-    """InternVL 内部图像统一表示为 PIL；此函数把 PIL / base64 / 路径 统一转 PIL(RGBA)。"""
+    """InternVL PIL PIL / base64 / PIL(RGBA)"""
     if isinstance(img_or_path, Image.Image):
         return img_or_path.convert("RGBA") if img_or_path.mode != "RGBA" else img_or_path
     if isinstance(img_or_path, str):
@@ -2155,16 +1971,15 @@ def _ensure_pil_rgba(img_or_path):
             return Image.open(BytesIO(base64.b64decode(b64))).convert("RGBA")
         if os.path.exists(img_or_path):
             return Image.open(img_or_path).convert("RGBA")
-        # 裸 base64
         try:
             return Image.open(BytesIO(base64.b64decode(img_or_path))).convert("RGBA")
         except Exception:
-            raise ValueError("[_ensure_pil_rgba] 无法识别的图像输入")
+            raise ValueError("[_ensure_pil_rgba] ")
     raise TypeError(f"[_ensure_pil_rgba] unsupported type: {type(img_or_path)}")
 
 
 def pil_to_base64(pil_img, format="PNG"):
-    """PIL → 'data:image;base64,...'；供 SAM3 HTTP POST 使用。"""
+    """PIL → 'data:image;base64,...' SAM3 HTTP POST """
     if pil_img.mode != "RGB":
         pil_img = pil_img.convert("RGB")
     buf = BytesIO()
@@ -2183,12 +1998,12 @@ def add_legend_to_lpd_image(
     text_color=(20, 20, 20),
     border_color=(100, 100, 100),
 ):
-    """在 LPD 输出图像外侧追加「■ label」图注条带。
+    """ LPD ■ label
 
-    参数:
-        lpd_image: PIL.Image（InternVL 的 LPD 输出）、或 base64 字符串
+    :
+        lpd_image: PIL.ImageInternVL LPD base64 
         color_label_pairs: list[(rgb_tuple, label_str)]
-    返回:
+    :
         PIL.Image RGBA
     """
     if not color_label_pairs:
@@ -2275,26 +2090,24 @@ def add_legend_to_lpd_image(
                 draw.text((tx, ty), label_disp, fill=text_color, font=font)
         return new_img
     except Exception as e:
-        print(f"[add_legend] 追加图注失败: {e}")
+        print(f"[add_legend] : {e}")
         return lpd_image
 
-
-# ── SAM3 / Grounding DINO 调用 ────────────────────────────────────────────
 
 def call_grounding_expert(image_pil_or_b64, entity_list,
                           expert_url="http://localhost:8002/predict",
                           box_threshold=0.3):
-    """调用 SAM3 / Grounding DINO HTTP 服务做开放词汇检测。
+    """ SAM3 / Grounding DINO HTTP 
 
-    参数:
-        image_pil_or_b64: PIL.Image / 'data:image;base64,...' / 文件路径
-        entity_list: list[str] 实体文本
-        expert_url: 服务地址（与 expert_server/model_service 兼容）
-    返回:
-        dict[entity] -> list[[x0,y0,x1,y1]] 归一化坐标
+    :
+        image_pil_or_b64: PIL.Image / 'data:image;base64,...' / 
+        entity_list: list[str] 
+        expert_url: expert_server/model_service 
+    :
+        dict[entity] -> list[[x0,y0,x1,y1]] 
     """
     if http_requests is None:
-        print("[SAM3] requests 不可用，跳过调用")
+        print("[SAM3] requests ")
         return {e: [] for e in entity_list}
     try:
         pil = _ensure_pil_rgba(image_pil_or_b64)
@@ -2307,7 +2120,7 @@ def call_grounding_expert(image_pil_or_b64, entity_list,
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         img_w, img_h = pil_rgb.size
     except Exception as e:
-        print(f"[SAM3] 图像编码失败: {e}")
+        print(f"[SAM3] : {e}")
         return {e2.strip(): [] for e2 in entity_list}
 
     expert_results = {}
@@ -2345,7 +2158,7 @@ def call_grounding_expert(image_pil_or_b64, entity_list,
 
 
 def get_sam3_supplement_bboxes(sam3_results, max_per_entity=3):
-    """从 SAM3 结果提取 (bboxes, labels)；每实体按面积降序取前 K 个。"""
+    """ SAM3 (bboxes, labels) K """
     supplement_bboxes = []
     entity_labels = []
     for entity, boxes in sam3_results.items():
@@ -2363,7 +2176,7 @@ def get_sam3_supplement_bboxes(sam3_results, max_per_entity=3):
 
 
 def filter_noise_bboxes(bboxes, min_area_ratio=0.001, edge_margin=0.02):
-    """过滤微小 / 角落 bbox。"""
+    """ / bbox"""
     if not bboxes:
         return bboxes
     filtered = []
@@ -2387,7 +2200,7 @@ def filter_noise_bboxes(bboxes, min_area_ratio=0.001, edge_margin=0.02):
 
 
 def extract_answer_letter(text):
-    """从模型输出中提取答案字母 (A-E)。"""
+    """ (A-E)"""
     if not text:
         return None
     m = _re_grace.search(r"<FINAL_OUTPUT>\s*\(?([A-E])\)?\s*", text)
@@ -2399,7 +2212,6 @@ def extract_answer_letter(text):
     ms = _re_grace.findall(r"\b([A-E])\b", text)
     if ms:
         return ms[-1]
-    # 兜底：最后一个非空字符若为 A-E 则返回
     tail = text.strip()
     if tail and tail[-1] in "ABCDE":
         return tail[-1]
@@ -2419,7 +2231,7 @@ def _bbox_iou(b1, b2):
 
 
 def crop_image_region_b64(image_pil_or_b64, bbox_norm):
-    """裁剪归一化坐标区域，返回 'data:image;base64,...' 字符串。"""
+    """ 'data:image;base64,...' """
     try:
         pil = _ensure_pil_rgba(image_pil_or_b64)
         pil_rgb = pil.convert("RGB")
@@ -2433,7 +2245,7 @@ def crop_image_region_b64(image_pil_or_b64, bbox_norm):
         cropped = pil_rgb.crop((x0, y0, x1, y1))
         return pil_to_base64(cropped)
     except Exception as e:
-        print(f"[crop_region] 裁剪失败: {e}")
+        print(f"[crop_region] : {e}")
         try:
             return pil_to_base64(_ensure_pil_rgba(image_pil_or_b64).convert("RGB"))
         except Exception:
@@ -2447,9 +2259,9 @@ def secondary_sam3_check_on_att_bboxes(
     iou_dedup_threshold=0.8,
     max_new_bboxes=3,
 ):
-    """对注意力 bbox 区域二次调用 SAM3 查漏补缺。
+    """ bbox SAM3 
 
-    返回: (found_any, new_entries_per_img)
+    : (found_any, new_entries_per_img)
         new_entries_per_img: dict[img_idx] -> list[(box_norm, label)]
     """
     found_any = False
@@ -2484,7 +2296,7 @@ def secondary_sam3_check_on_att_bboxes(
                     cropped_b64, entity_list, expert_url=sam3_url
                 )
             except Exception as e:
-                print(f"[secondary_sam3] SAM3 调用失败: {e}")
+                print(f"[secondary_sam3] SAM3 : {e}")
                 continue
             for entity, bboxes in crop_results.items():
                 sorted_bboxes = sorted(
@@ -2527,12 +2339,11 @@ def secondary_sam3_check_on_att_bboxes(
     return found_any, new_entries_per_img
 
 
-# ── Router v2 特征提取 ───────────────────────────────────────────────────
 _OPT_PAT_V2 = _re_grace.compile(r"(?:^|\n|\s)\(?([A-Z])[\)\.\:]", _re_grace.MULTILINE)
 
 
 def _parse_options_v2(question: str):
-    """解析题干从 A 起连续出现的选项字母；兜底 ABCD。"""
+    """ A ABCD"""
     if not question:
         return ["A", "B", "C", "D"]
     found = set()
@@ -2549,7 +2360,7 @@ def _parse_options_v2(question: str):
 
 
 def build_answer_instr_v2(question: str) -> str:
-    """v2 direct-answer 指令；末尾 'Answer:' 强诱导首 token = 选项字母。"""
+    """v2 direct-answer 'Answer:' token = """
     letters = _parse_options_v2(question)
     letters_str = (", ".join(letters[:-1]) + f", or {letters[-1]}"
                    if len(letters) > 1 else letters[0])
@@ -2563,10 +2374,10 @@ def build_answer_instr_v2(question: str) -> str:
 
 
 def compute_router_v2_features(first_logits, question, option_token_ids_all):
-    """根据首 token vocab logits 计算 Router v2 特征集合（完备 7 维）。
+    """ token vocab logits Router v2 7 
 
-    返回:
-        dict 或 None（当选项解析失败时）
+    :
+        dict None
     """
     if first_logits is None:
         return None
@@ -2615,16 +2426,13 @@ def compute_router_v2_features(first_logits, question, option_token_ids_all):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# GRACE 可视化产物（对齐 Qwen2.5 版）:
-#   1. *_agg_heatmap.png  聚合注意力热力图 + 绿色 att bbox + 橙虚线 SAM3 bbox
-#   2. *_lpd_hide_out_*.png  纯 HiDe LPD (仅 attention bbox)
 #   3. *_lpd_out_*.png       GRACE LPD  (SAM3 overlay + legend)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_aggregated_heatmap(accept_att: dict, img_idx: int):
-    """将 accept_att[img_idx] 中所有 token 的注意力图取均值, 归一化到 [0,1]。
+    """ accept_att[img_idx] token , [0,1]
 
-    accept_att 结构: {img_idx: {token_k: att_map (H, W) 或 (1, H, W)}}
+    accept_att : {img_idx: {token_k: att_map (H, W) (1, H, W)}}
     """
     if img_idx not in accept_att or not accept_att[img_idx]:
         return None
@@ -2638,7 +2446,6 @@ def build_aggregated_heatmap(accept_att: dict, img_idx: int):
         maps.append(arr)
     if not maps:
         return None
-    # 不同 token 的 att_map 尺寸理论一致; 若不一致则 resize 到第一个
     base_shape = maps[0].shape
     uni = []
     for m in maps:
@@ -2652,7 +2459,7 @@ def build_aggregated_heatmap(accept_att: dict, img_idx: int):
 
 
 def _load_pil_any(image_any):
-    """把 PIL / base64 / 路径统一为 PIL.Image (RGB)。"""
+    """ PIL / base64 / PIL.Image (RGB)"""
     from PIL import Image as _Image
     if isinstance(image_any, _Image.Image):
         return image_any.convert("RGB")
@@ -2662,7 +2469,6 @@ def _load_pil_any(image_any):
             return _Image.open(io.BytesIO(base64.b64decode(_b64))).convert("RGB")
         if os.path.exists(image_any):
             return _Image.open(image_any).convert("RGB")
-        # 裸 base64
         try:
             return _Image.open(io.BytesIO(base64.b64decode(image_any))).convert("RGB")
         except Exception:
@@ -2673,7 +2479,7 @@ def _load_pil_any(image_any):
         if arr.ndim == 3 and arr.shape[-1] == 4:
             arr = arr[..., :3]
         return _Image.fromarray(arr.astype(np.uint8)).convert("RGB")
-    raise ValueError(f"[_load_pil_any] 不支持的输入类型: {type(image_any)}")
+    raise ValueError(f"[_load_pil_any] : {type(image_any)}")
 
 
 def save_attention_heatmap(
@@ -2686,9 +2492,9 @@ def save_attention_heatmap(
     sam3_bboxes_norm=None,
     title="",
 ):
-    """渲染 jet 热力图叠加到原图, 绿色绘制 attention bbox, 橙虚线绘制 SAM3 bbox。
+    """ jet , attention bbox, SAM3 bbox
 
-    image_any 可以是 PIL / base64 / 文件路径 / np.ndarray。
+    image_any PIL / base64 / / np.ndarray
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -2703,7 +2509,7 @@ def save_attention_heatmap(
     try:
         orig_img = _load_pil_any(image_any)
     except Exception as _e:
-        print(f"[heatmap] 读取原图失败: {_e}")
+        print(f"[heatmap] : {_e}")
         return
     W, H = orig_img.size
 
@@ -2754,12 +2560,12 @@ def save_attention_heatmap(
     try:
         _plt.savefig(save_path, bbox_inches="tight", dpi=100)
     except Exception as _e:
-        print(f"[heatmap] 保存失败 {save_path}: {_e}")
+        print(f"[heatmap] {save_path}: {_e}")
     _plt.close(fig)
 
 
 def save_pil_lpd(pil_or_b64, save_path):
-    """把 GRACE / HiDe LPD 输出(PIL/base64/np.ndarray) 落盘为 PNG。"""
+    """ GRACE / HiDe LPD (PIL/base64/np.ndarray) PNG"""
     try:
         os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     except Exception:
@@ -2768,5 +2574,5 @@ def save_pil_lpd(pil_or_b64, save_path):
         im = _load_pil_any(pil_or_b64)
         im.save(save_path)
     except Exception as _e:
-        print(f"[save_lpd] 保存失败 {save_path}: {_e}")
+        print(f"[save_lpd] {save_path}: {_e}")
 

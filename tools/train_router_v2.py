@@ -83,50 +83,43 @@ DEFAULT_FEATS = [
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 主流程
 # ──────────────────────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--features", default=os.path.join(_THIS, "features_train_v2.jsonl"),
-                   help="v2 训练特征")
+                   help="v2 ")
     p.add_argument("--cgw_data",
                    default="/path/to/data/ori_correct_grace_wrong.json",
-                   help="ori_correct ∩ grace_wrong（cgw）：事后评估 + 选 α 辅助")
+                   help="ori_correct ∩ grace_wrongcgw + α ")
     p.add_argument("--ow_gw_data",
                    default="/path/to/data/ori_wrong_grace_wrong.json",
-                   help="ori_wrong ∩ grace_wrong（ow_gw）：定义 must-recall 集")
+                   help="ori_wrong ∩ grace_wrongow_gw must-recall ")
     p.add_argument("--output", default=os.path.join(_THIS, "router_v2_report.json"))
     p.add_argument("--feats", nargs="+", default=DEFAULT_FEATS,
                    help="features to use; default = CORE5 (5 pure-numeric features)")
 
-    # 决策参数
     p.add_argument("--alpha", type=float, default=0.01,
-                   help="must-recall 集的 conformal miscoverage rate；0 = 严格 100% 召回")
+                   help="must-recall conformal miscoverage rate0 = 100% ")
     p.add_argument("--model", choices=["gbdt", "lr"], default="gbdt",
-                   help="分类器：gbdt（默认，更强）或 lr（更可解释）")
+                   help="gbdt lr")
 
-    # GBDT 超参
     p.add_argument("--gbdt_n_estimators", type=int, default=300)
     p.add_argument("--gbdt_max_depth", type=int, default=3)
     p.add_argument("--gbdt_lr", type=float, default=0.05)
 
-    # LR 超参
     p.add_argument("--lr_C", type=float, default=1.0)
 
-    # CV 与随机种子
     p.add_argument("--K", type=int, default=5, help="K-fold OOF")
     p.add_argument("--seed", type=int, default=2077)
 
     args = p.parse_args()
 
-    # ── 载入数据 ───────────────────────────────────────────────────
     recs_all = [json.loads(l) for l in open(args.features) if l.strip()]
     cnt = Counter(r["label"] for r in recs_all)
     print(f"[load] {len(recs_all)} records, label dist: {dict(cnt)}")
 
     # (No text-keyword enrichment: v2 uses pure-numeric features only.)
 
-    # 过滤不合格记录
     feats = args.feats
     print(f"[feats] {len(feats)} features: {feats}")
 
@@ -141,7 +134,6 @@ def main():
     print(f"[binary] y=1 (ori_wrong): {int(y.sum())},  "
           f"y=0 (ori_correct): {int((1-y).sum())}")
 
-    # ── 载入 cgw / ow_gw 集合 ───────────────────────────────────────
     cgw_keys = set()
     if os.path.exists(args.cgw_data):
         cgw_keys = {(str(r["id"]), r["image_path"])
@@ -156,7 +148,6 @@ def main():
 
     # must-recall：ori_wrong \ ow_gw
     must_recall_mask = (y == 1) & (~is_owgw)
-    # 子集统计
     n_mr = int(must_recall_mask.sum())
     n_owgw_pos = int(((y == 1) & is_owgw).sum())
     n_cgw = int(((y == 0) & is_cgw).sum())
@@ -167,7 +158,6 @@ def main():
     print(f"  cgw         (in ori_correct)     : {n_cgw:5d}  ← GRACE would hurt, WANT back to ori")
     print(f"  oc \\ cgw    (in ori_correct)     : {n_oc_ngw:5d}  ← GRACE ok, but skip saves compute")
 
-    # ── 训练模型（K-Fold OOF） ─────────────────────────────────────
     print(f"\n{'='*70}")
     print(f"Training {args.model.upper()} with {args.K}-fold OOF")
     print(f"{'='*70}")
@@ -178,11 +168,9 @@ def main():
     oof = np.zeros(len(y), dtype=np.float64)
     fold_aucs = []
 
-    # 保存每个 fold 的模型 parameters（最终会用 full-fit 模型部署）
     for k, (tr, te) in enumerate(skf.split(X, y)):
         if args.model == "gbdt":
             from sklearn.ensemble import GradientBoostingClassifier
-            # GBDT 不需要 scaling；class_weight 通过 sample_weight 实现
             sw = np.where(y[tr] == 1,
                           len(y[tr]) / (2 * max(y[tr].sum(), 1)),
                           len(y[tr]) / (2 * max((1 - y[tr]).sum(), 1)))
@@ -194,7 +182,6 @@ def main():
             )
             clf.fit(X[tr], y[tr], sample_weight=sw)
             p_te = clf.predict_proba(X[te])[:, 1]
-            # logit 空间，便于 conformal floor 的数值稳定
             oof[te] = np.log(p_te / (1 - p_te + 1e-12) + 1e-12)
         else:
             from sklearn.linear_model import LogisticRegression
@@ -209,12 +196,10 @@ def main():
         print(f"  [fold {k+1}/{args.K}] AUC = {fold_aucs[-1]:.4f}")
     print(f"  OOF AUC mean = {np.mean(fold_aucs):.4f} ± {np.std(fold_aucs):.4f}")
 
-    # ── Conformal Safe Floor（基于 must-recall 集） ────────────────
     mr_scores = oof[must_recall_mask]
     if args.alpha == 0.0:
         s_floor = float(mr_scores.min())
     else:
-        # Q_α 下分位数：允许 α 比例的 must-recall 样本被 skip（漏召回）
         s_floor = float(np.quantile(mr_scores, args.alpha))
 
     print(f"\n[s_floor] α = {args.alpha}")
@@ -224,7 +209,6 @@ def main():
           f"median={np.median(mr_scores):.3f} "
           f"max={mr_scores.max():.3f}")
 
-    # ── 在 OOF 上评估最终决策 ──────────────────────────────────────
     trigger = oof >= s_floor
     skip = ~trigger
 
@@ -263,7 +247,6 @@ def main():
           f"{oc_ngw_skip_n / max(n_oc_ngw,1):7.2%}  (compute saved)")
     print(f"  └────────────────────────────────────────────────")
 
-    # ── α 敏感性表 ─────────────────────────────────────────────────
     print(f"\n{'='*70}")
     print(f"α sensitivity (how choice of α affects the trade-off)")
     print(f"{'='*70}")
@@ -283,7 +266,6 @@ def main():
         print(f"  {a:>6.3f}  {sf:>+9.4f}  {mr_r:>9.2%}   "
               f"{cgw_s:>7.2%}   {oc_s:>10.2%}   {ow_gw_s:>9.2%}{mark}")
 
-    # ── 全量训练部署模型 ───────────────────────────────────────────
     print(f"\n{'='*70}")
     print(f"Final model fit (on full training set)")
     print(f"{'='*70}")
@@ -307,17 +289,14 @@ def main():
             random_state=args.seed,
         )
         clf_full.fit(X, y, sample_weight=sw_full)
-        # 特征重要性
         imp = clf_full.feature_importances_
         print("  [GBDT feature_importances_]")
         for f, v in sorted(zip(feats, imp), key=lambda x: -x[1]):
             print(f"    {f:32s}: {v:.4f}")
-        # 序列化：pickle 成 base64，供 router_v2 直接加载；同时存文件
         import pickle, base64
         gbdt_bytes = pickle.dumps(clf_full)
         gbdt_b64 = base64.b64encode(gbdt_bytes).decode("ascii")
         model_payload["gbdt_model_b64"] = gbdt_b64
-        # 额外存成独立文件便于调试
         gbdt_path = args.output.replace(".json", "_gbdt.pkl")
         with open(gbdt_path, "wb") as fw:
             fw.write(gbdt_bytes)
@@ -342,9 +321,6 @@ def main():
             "feature_sd": sc_full.scale_.tolist(),
         })
 
-    # ── 保存路由器配置 ─────────────────────────────────────────────
-    # 为了支持部署时动态调节 α（不用重训），保存 must-recall 集的 OOF 分数。
-    # RouterV2.set_alpha(new_alpha) 可以按新 α 在这个分数上取 quantile。
     mr_oof_scores_sorted = sorted(float(s) for s in mr_scores)
 
     payload = {
@@ -354,7 +330,6 @@ def main():
             "s_floor = Q_alpha(s_oof[ori_wrong - ow_gw])  |  "
             "s(x) = GBDT logit (or LR standardized)"
         ),
-        # 保存 must-recall 子集的 OOF 分数（已升序），供部署期动态调 α 用
         "mr_oof_scores_sorted": mr_oof_scores_sorted,
         "oof_evaluation": {
             "must_recall_n": n_mr,

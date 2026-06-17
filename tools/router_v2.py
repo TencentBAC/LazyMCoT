@@ -68,8 +68,6 @@ class RouterV2:
         self.s_floor = float(s_floor)
         self.alpha = float(alpha)
 
-        # 训练期 must-recall 子集的 OOF 分数（升序）。
-        # 用户可以调用 set_alpha() 动态按新 α 取分位数，避免重训。
         self.mr_oof_scores_sorted = (
             list(mr_oof_scores_sorted) if mr_oof_scores_sorted else None
         )
@@ -95,21 +93,20 @@ class RouterV2:
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
-    # ──────────────────── 动态调节 α ────────────────────
     def set_alpha(self, new_alpha: float) -> float:
         """
-        按新 α 重新计算 s_floor = Q_α(mr_oof_scores)。
+         α s_floor = Q_α(mr_oof_scores)
 
-        需要 router JSON 里保存了 `mr_oof_scores_sorted`（train_router_v2.py 会保存）。
-        若没有该字段（旧版 report），会抛 RuntimeError。
+         router JSON `mr_oof_scores_sorted`train_router_v2.py 
+         report RuntimeError
 
         Args:
-            new_alpha: 新的 conformal miscoverage rate，∈ [0, 1)
-                      0   = 严格召回 must-recall 100%（最保守）
-                      0.01 = 允许 1% 必召回样本漏掉，换更多 skip 空间
+            new_alpha: conformal miscoverage rate∈ [0, 1)
+                      0 = must-recall 100%
+                      0.01 = 1% skip 
                       ...
         Returns:
-            new_s_floor: 重新计算后的决策阈值
+            new_s_floor: 
         """
         if self.mr_oof_scores_sorted is None:
             raise RuntimeError(
@@ -184,7 +181,6 @@ class RouterV2:
         features = d["features"]
         s_floor = d["s_floor"]
         alpha = d.get("alpha", 0.0)
-        # 新字段（可选，用于支持 set_alpha 动态调节）
         mr_oof = d.get("mr_oof_scores_sorted", None)
 
         if model_type == "gbdt":

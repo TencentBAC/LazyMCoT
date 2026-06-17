@@ -9,7 +9,6 @@ def merge_json_files(num_gpus,cycle_times,savedir):
         ranksavedir = savedir.replace(".json",f"_rank-{rank}.json")
         with open(ranksavedir, 'r', encoding='utf-8') as f:
             content = f.read().strip()
-            # 然后再处理
             objects = content.replace('\n}\n{\n', '\n}|-|-|{\n').split('|-|-|')
             data_list = [json.loads(obj) for obj in objects if obj.strip()]
             merged_data.extend(data_list)
@@ -20,7 +19,7 @@ def load_dataset(json_path):
         data = json.load(f)
     
     if not isinstance(data, list):
-        raise ValueError("JSON 文件内容应为一个包含字典对象的列表")
+        raise ValueError("JSON ")
 
     return data
 
@@ -29,7 +28,6 @@ def read_multi_line_json_objects(file_path):
     buffer = ""
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read().strip()
-        # 然后再处理
         objects = content.replace('}\n{', '}|-|-|{').split('|-|-|')
         # print(objects[0])
         data_list = []
@@ -53,12 +51,11 @@ def calculate_category_accuracy(data):
         method: {"correct": 0, "total": 0} for method in inference_methods
     }
 
-    # 新增：统计 CoT 帮正、帮反、都对、都错的情况
     correction_stats = {
-        "cot_helped_positive": 0,  # ori 错，cot 对
-        "cot_helped_negative": 0,  # ori 对，cot 错
-        "cot_both_correct": 0,     # ori 和 cot 都对
-        "cot_both_wrong": 0,       # ori 和 cot 都错
+        "cot_helped_positive": 0, # ori cot 
+        "cot_helped_negative": 0, # ori cot 
+        "cot_both_correct": 0, # ori cot 
+        "cot_both_wrong": 0, # ori cot 
         "total": 0
     }
 
@@ -107,7 +104,6 @@ def calculate_category_accuracy(data):
         overall_row[f"{method}_total"] = total
         overall_row[f"{method}_accuracy"] = f"{accuracy:.1%}"
 
-    # # 添加 CoT 分析字段
     total_count = correction_stats["total"]
 
     output = [overall_row] + output

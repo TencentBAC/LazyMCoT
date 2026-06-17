@@ -39,13 +39,12 @@ import math
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Router v2 辅助：从完整词表 first_logits 抽取 v2 的 13 维特征
 # ──────────────────────────────────────────────────────────────────────────────
 _OPT_PAT_V2 = re.compile(r"(?:^|\n|\s)\(?([A-Z])[\)\.\:]", re.MULTILINE)
 
 
 def _parse_options_v2(question: str):
-    """解析题干里从 A 起连续出现的选项字母；兜底返回 ABCD"""
+    """ A ABCD"""
     if not question:
         return ["A", "B", "C", "D"]
     found = set()
@@ -63,15 +62,15 @@ def _parse_options_v2(question: str):
 
 def build_answer_instr_v2(question: str) -> str:
     """
-    v2 统一的"简洁直接字母作答"指令 —— 用于 direct-answer 与 GRACE 最终推理。
+    v2 "" direct-answer GRACE 
 
-    设计要点：
-      1. 末尾 "Answer:" 强诱导首 token = 选项字母（与 features_train_v2.jsonl
-         训练分布对齐，保证 router 特征匹配）。
-      2. 不含 <FINAL_OUTPUT> tag。下游评估函数取答案字符串的最后字符，
-         所以只需保证最后字符是答案字母即可（首 token == 最后字符）。
-      3. 这样保证 ori 分支与 GRACE 分支用同一套 prompt，不会因为 GRACE 换
-         prompt 导致"对的答案被改错"（regret）。
+    
+      1. "Answer:" token = features_train_v2.jsonl
+          router 
+      2. <FINAL_OUTPUT> tag
+          token == 
+      3. ori GRACE prompt GRACE 
+         prompt ""regret
     """
     letters = _parse_options_v2(question)
     letters_str = (", ".join(letters[:-1]) + f", or {letters[-1]}"
@@ -87,24 +86,23 @@ def build_answer_instr_v2(question: str) -> str:
 
 def compute_router_v2_features(first_logits, question, option_token_ids_all):
     """
-    给定 first-token vocab logits（1D np.ndarray [V]）+ question + A-Z token map，
-    计算 RouterV2 可能用到的数值特征（6 维完备集合，router 按自身需要 pick）。
+     first-token vocab logits1D np.ndarray [V]+ question + A-Z token map
+     RouterV2 6 router pick
 
-    返回特征：
-        answer_topp                 选项 top-1 概率
+    
+        answer_topp top-1 
         answer_margin               top1 - top2
-        answer_entropy              选项 K-way 熵 (nat)
-        answer_entropy_norm         选项 K-way 熵 / log(K)    ★ 推荐单特征
-        option_mass                 选项 token 总概率
-        logit_gap_opt_nonopt        max 选项 logit - max 非选项 logit
-        vocab_full_entropy_norm     首 token 全词表归一化熵（备用）
+        answer_entropy K-way (nat)
+        answer_entropy_norm K-way / log(K) ★ 
+        option_mass token 
+        logit_gap_opt_nonopt max logit - max logit
+        vocab_full_entropy_norm token 
     """
     if first_logits is None:
         return None
     try:
         import numpy as np
         logits = np.asarray(first_logits, dtype=np.float64)
-        # softmax on full vocab (稳定计算)
         l = logits - logits.max()
         p_full = np.exp(l)
         p_full = p_full / max(p_full.sum(), 1e-12)
@@ -126,7 +124,6 @@ def compute_router_v2_features(first_logits, question, option_token_ids_all):
         answer_margin = (float(sorted_p[0] - sorted_p[1])
                          if len(sorted_p) > 1 else float(sorted_p[0]))
 
-        # K-way 选项熵（归一化到 log(K)，跨不同选项数可比）
         answer_entropy = -float((p_opt * np.log(p_opt + 1e-12)).sum())
         answer_entropy_norm = answer_entropy / max(math.log(K), 1e-12)
 
@@ -167,22 +164,19 @@ def unpack_att_result(result_item):
 
 def append_visual_inputs(content, ori_img_url, hide_highlight_imgs=None, highlight_imgs=None):
     """
-    按固定顺序往 content 追加视觉输入（供最终 VLM 推理使用）：
-        1) 原图（ori_img_url）
-        2) HiDe 输出图（hide_highlight_imgs）——纯注意力 LPD，无 SAM3 装饰
-        3) 带视觉专家 bbox 的 HiDe 输出图（highlight_imgs）——含 SAM3 彩色边框 + 图注
+     content VLM 
+        1) ori_img_url
+        2) HiDe hide_highlight_imgs LPD SAM3 
+        3) bbox HiDe highlight_imgs SAM3 + 
 
-    若 HiDe 输出与 GRACE 输出完全一致（SAM3 无效，overlay 未触发），
-    跳过第 2 张避免重复。
+     HiDe GRACE SAM3 overlay 
+     2 
     """
-    # 第 1 张：原图
     for img in ori_img_url:
         content.append({"type": "image", "image": img})
-    # 第 2 张：HiDe 输出（仅当与 GRACE 输出不完全相同时才传）
     if hide_highlight_imgs and hide_highlight_imgs != highlight_imgs:
         for h_img in hide_highlight_imgs:
             content.append({"type": "image", "image": h_img})
-    # 第 3 张：带视觉专家 bbox 的 HiDe 输出
     if highlight_imgs:
         for h_img in highlight_imgs:
             content.append({"type": "image", "image": h_img})
@@ -256,7 +250,6 @@ Now, following all the rules above, extract the entities from the question below
     messages[-1]["content"] = messages[-1]["content"][:-1]
     outputs = {}
     
-    #如果提取出了实体词
     if answer_out: 
         messages[-1]["content"].append({"type": "text", "text": "Search the following entities in the images: "+answer_out})
         text,image_inputs,video_inputs,inputs,video_kwargs = get_inputs(messages,qwen_processor,model)
@@ -267,14 +260,12 @@ Now, following all the rules above, extract the entities from the question below
                 img_merged_boxes, crop_list, words_lines, highlight_imgs, bounding_boxes, hide_highlight_imgs = unpack_att_result(results[str(s)][str(t)])
                 messages = [ {"role": "user","content": [],},]
                 append_visual_inputs(messages[-1]["content"], ori_img_url, hide_highlight_imgs, highlight_imgs)
-                #加上问题
                 messages[-1]["content"].append({"type": "text", "text": ques+"\nAnswer with the option's letter from the given choices letter. The final and only output content must be enclosed within `<FINAL_OUTPUT>` and `</FINAL_OUTPUT>` tags."})
                 text,image_inputs,video_inputs,inputs,video_kwargs = get_inputs(messages,qwen_processor,model)
                 output_text,_ = messages2out(model,qwen_processor,inputs)
                 if not str(s) in outputs:outputs[str(s)] = {}
                 outputs[str(s)][str(t)] = [[answer_out],output_text,crop_list,highlight_imgs,messages,words_lines,img_merged_boxes,bounding_boxes]
                 
-    #没有提取出实体词
     else:
         messages[-1]["content"].append({"type": "text", "text": "Search the following entities in the images: " + ques +"\nAnswer with the option's letter from the given choices letter. The final and only output content must be enclosed within `<FINAL_OUTPUT>` and `</FINAL_OUTPUT>` tags."})
         text,image_inputs,video_inputs,inputs,video_kwargs = get_inputs(messages,qwen_processor,model)
@@ -285,7 +276,6 @@ Now, following all the rules above, extract the entities from the question below
                 img_merged_boxes, crop_list, words_lines, highlight_imgs, bounding_boxes, hide_highlight_imgs = unpack_att_result(results[str(s)][str(t)])
                 messages = [ {"role": "user","content": [],},]
                 append_visual_inputs(messages[-1]["content"], ori_img_url, hide_highlight_imgs, highlight_imgs)
-                #加上问题
                 messages[-1]["content"].append({"type": "text", "text": ques+"\nAnswer with the option's letter from the given choices letter. The final and only output content must be enclosed within `<FINAL_OUTPUT>` and `</FINAL_OUTPUT>` tags."})
                 text,image_inputs,video_inputs,inputs,video_kwargs = get_inputs(messages,qwen_processor,model)
                 output_text,_ = messages2out(model,qwen_processor,inputs)
@@ -308,22 +298,22 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                       router_alpha=None,
                       heatmap_save_dir=None):
     """
-    核心推理函数。
+    
 
-    参数说明:
-        enable_saaa: 旧 EGAF 模式（注意力图与专家注意力掩码 Rank-Based Fusion）
-        enable_acr:  自适应置信度路由
-        enable_pmgvv: 渐进式多粒度视觉验证
-        enable_grace: GRACE 模式（新方案）
-            - 使用相对注意力归一化（A_rel = A / A_noise）替代简单减法，压制背景噪声
-            - SAM3 文本提示检测结果作为独立补充 bbox（不融合进注意力图）
-            - Otsu 自适应阈值替代固定阈值
-            - 最终 bounding_boxes = 注意力 bbox ∪ SAM3 bbox
-        grace_sam3_url: SAM3 服务地址（model_service_v2.py）
-        grace_max_sam3_per_entity: 每个实体最多保留的 SAM3 bbox 数量
-        heatmap_save_dir: str | None，注意力热力图保存目录。
-            None（默认）表示不保存；非 None 时每条样本每张图都会保存一张
-            叠加了注意力热力图 + bbox 标注的 PNG 文件，命名规则：
+    :
+        enable_saaa: EGAF Rank-Based Fusion
+        enable_acr:  
+        enable_pmgvv: 
+        enable_grace: GRACE 
+            - A_rel = A / A_noise
+            - SAM3 bbox
+            - Otsu 
+            - bounding_boxes = bbox ∪ SAM3 bbox
+        grace_sam3_url: SAM3 model_service_v2.py
+        grace_max_sam3_per_entity: SAM3 bbox 
+        heatmap_save_dir: str | None
+            None None 
+             + bbox PNG 
             {sample_id}_img{img_idx}_s{sigma}_t{thresh}_agg_heatmap.png
     """
     current_time = time.localtime()
@@ -331,7 +321,7 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
     device = f"cuda:{gpu_id}"
 
     print(rank,len(dataset_part),device,f"batch_size={batch_size}")
-    print(f"  创新点开关: EGAF={enable_saaa}(mode={egaf_fusion_mode},w={egaf_expert_weight}), ACR={enable_acr}, PMGVV={enable_pmgvv}")
+    print(f" : EGAF={enable_saaa}(mode={egaf_fusion_mode},w={egaf_expert_weight}), ACR={enable_acr}, PMGVV={enable_pmgvv}")
 
     model_path = r"/path/to/ckpt/Qwen2.5-VL-7B-Instruct"
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -346,34 +336,23 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
         qwen_processor.tokenizer.pad_token = qwen_processor.tokenizer.eos_token
 
     # ══════════════════════════════════════════════════════════════════════
-    # 难度感知路由器（Threshold-Free Router）加载
     # ══════════════════════════════════════════════════════════════════════
-    # 启用后：
-    #   在第 1 步 direct-answer 阶段，额外收集首个生成 token 的词表 softmax
-    #   → RouterV2 动态解析选项字母 + 全词表熵 + option_mass + logit_gap 等特征
-    #   → Cost-Aware Conformal Safe-Skip 决策
-    #   （或旧版 4 类 / 2 类 ThresholdFree / Conformal Router，向后兼容）
-    # 若 trigger=False：直接用 direct-answer 作为最终结果，跳过 GRACE/HiDe 管道
     router = None
     router_kind = None                          # "v2_gbdt"/"v2_lr"/"conformal"/"binary"/"4class"
-    option_token_ids = None                     # 仅 v1 路由器使用（ABCD）
-    option_token_ids_all = None                 # A-Z 全字母 → token_id，v2 路由器使用
+    option_token_ids = None # v1 ABCD
+    option_token_ids_all = None # A-Z → token_idv2 
     if enable_router:
         try:
-            # 路由器需要 direct-answer 的 first-token logits，因此强制 skip_ori=False
             if skip_ori:
-                print(f"⚠️ enable_router=True 需要 direct-answer logits；强制 skip_ori=False")
+                print(f"⚠️ enable_router=True direct-answer logits skip_ori=False")
                 skip_ori = False
-            # 加载路由器（自动识别 4 类 / 2 类）
             _rp = router_report_path or os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "params", "Qwen2.5", "router_report.json",
             )
-            # 通过查看 model_type 字段决定加载哪种路由器
             with open(_rp, "r") as _f:
                 _meta = json.load(_f)
             _mtype = _meta.get("model_type", "multinomial_logreg_4class")
-            # 把 tools/ 路径加进 sys.path 以便导入新版 Router
             _tools_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "tools",
@@ -381,12 +360,9 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
             if _tools_dir not in sys.path:
                 sys.path.insert(0, _tools_dir)
             if _mtype in ("gbdt", "lr"):
-                # 推荐：RouterV2 (Cost-Aware Conformal Safe-Skip)
                 from router_v2 import RouterV2
                 router = RouterV2.load(_rp)
                 router_kind = f"v2_{_mtype}"
-                # 若用户指定了 router_alpha，按新 α 重算 s_floor
-                # （需要 router report 里存有 mr_oof_scores_sorted）
                 if router_alpha is not None:
                     try:
                         _old_sf = router.s_floor
@@ -394,31 +370,26 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                         print(f"[router] override α = {router_alpha}  "
                               f"s_floor: {_old_sf:.4f} → {_new_sf:.4f}")
                     except Exception as _e:
-                        print(f"⚠️ 无法按 router_alpha={router_alpha} 调节 s_floor: {_e}")
-                        print(f"   保持训练时的 s_floor={router.s_floor:.4f} "
+                        print(f"⚠️ router_alpha={router_alpha} s_floor: {_e}")
+                        print(f" s_floor={router.s_floor:.4f} "
                               f"(α={router.alpha})")
             elif _mtype == "conformal_safe_skip_router":
-                # 推荐路由器（保证 ori_wrong 高召回 + 自动 conformal 阈值）
                 from router import Router
                 router = Router.load(_rp)
                 router_kind = "conformal"
             elif _mtype == "binary_logreg":
-                # 旧版二分类保守路由器（向后兼容）
-                from router import Router   # 已合并入新版
+                from router import Router # 
                 router = Router.load(_rp)
                 router_kind = "binary"
             else:
-                # 4 类无阈值路由器（旧版）
                 from difficulty_analysis.threshold_free_router import ThresholdFreeRouter
                 router = ThresholdFreeRouter.load(_rp)
                 router_kind = "4class"
 
-            # 取 A/B/C/D 对应的 token id（v1 路由器 / 兼容）
             option_token_ids = {}
             for letter in "ABCD":
                 ids = qwen_processor.tokenizer.encode(letter, add_special_tokens=False)
                 option_token_ids[letter] = ids[0]
-            # A-Z 全字母 token id（v2 路由器动态选项用）
             option_token_ids_all = {}
             for c in range(ord("A"), ord("Z") + 1):
                 ch = chr(c)
@@ -443,7 +414,7 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                 print(f"[router] decision rule: run_grace = (w_c*P(C) > w_b*P(B)) "
                       f"with w_c={router.w_c}, w_b={router.w_b}")
         except Exception as _e:
-            print(f"⚠️ 路由器加载失败，退回到全走 GRACE: {_e}")
+            print(f"⚠️ GRACE: {_e}")
             router = None
             router_kind = None
 
@@ -453,24 +424,13 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
         batch_samples = dataset_part[batch_start:batch_end]
         actual_batch_size = len(batch_samples)
         
-        # ==================== 第1步：批量直接回答（ori结果）====================
-        # skip_ori=True 时跳过此步，节省推理时间（不影响HiDe结果）
         direct_messages_list = []
         batch_img_urls = []
         batch_ori_img_urls = []
         batch_ques = []
 
-        # Prompt 选择说明
         # -------------------------------------------------------------
-        # v2 路由器用 "Answer:" direct prompt 采集训练特征。为保证推理特征
-        # 分布与训练一致（避免边界样本决策漂移），v2 路由器激活时推理也用
-        # 同一 prompt。
         #
-        # 注意：
-        #   (1) 训练期 extract_features_v2.py **必须** 使用与推理完全相同的
-        #       forward 路径（model.generate(..., output_scores=True)）才能
-        #       保证特征值一致 —— 这点已在 extract_features_v2.py 中修复。
-        #   (2) 若 router 未启用或是 v1 conformal/binary，则保持原 tag prompt。
         use_v2_prompt = (router is not None and router_kind is not None
                          and router_kind.startswith("v2_"))
 
@@ -480,7 +440,6 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
             ques = sample["Text"]
 
             if use_v2_prompt:
-                # v2 统一 prompt：首 token 直接是选项字母，与训练分布对齐
                 instr = build_answer_instr_v2(ques)
             else:
                 instr = (
@@ -513,22 +472,11 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
             try:
                 batched_inputs = batch_get_inputs(direct_messages_list, qwen_processor, model)
 
-                # ⚠️ 为了与 4_21 版 GRACE 流程保持**GPU 状态/数值一致**，
-                # direct-answer 的 ori 生成与 router 特征采集 **必须分开做两次 forward**：
-                #   (1) 先用 **不带 output_scores** 的 generate 拿 ori 答案（与 4_21 完全等价）
-                #   (2) 再用单独的 1-token forward 拿 first_logits 给 router
-                # 如果把它们合并成一个 output_scores=True 的 forward，HuggingFace
-                # 为存 scores tuple 会改变 GPU memory 分配顺序，在 bf16 + flash-attn
-                # 下会让后续 GRACE forward 的浮点数值出现微小扰动，导致边界样本
-                # （如 vstar id=4, id=54 这种多个选项概率接近的题）答案翻边。
 
-                # ── Step 1: 拿 ori 答案（与 4_21 完全一致，不带 output_scores） ──
                 direct_output_texts = batch_messages2out(model, qwen_processor, batched_inputs)
                 torch.cuda.empty_cache()
 
-                # ── Step 2: 若启用 router，再单独做一次 1-token forward 采特征 ──
                 if router is not None and option_token_ids is not None:
-                    # 重新 build 一次 inputs（batch_messages2out 消耗了原 inputs）
                     batched_inputs_r = batch_get_inputs(direct_messages_list, qwen_processor, model)
                     with torch.no_grad():
                         gen_out_r = model.generate(
@@ -539,7 +487,6 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                     if gen_out_r.scores is not None and len(gen_out_r.scores) > 0:
                         _first_logits_batch = gen_out_r.scores[0].float().cpu().numpy()   # [B, V]
                         import numpy as _np
-                        # 4 选项 softmax（v1 路由器用）
                         letters = ["A", "B", "C", "D"]
                         opt_idx = _np.array([option_token_ids[L] for L in letters], dtype=_np.int64)
                         opt_log = _first_logits_batch[:, opt_idx]
@@ -554,7 +501,6 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                             direct_margins[i] = float(sp[0] - sp[1])
                         while len(direct_topps) < actual_batch_size:
                             direct_topps.append(None); direct_margins.append(None)
-                        # v2 完整特征
                         if use_v2_prompt:
                             for _i in range(actual_batch_size):
                                 if _i < _first_logits_batch.shape[0]:
@@ -588,7 +534,6 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                             tp = float(_sp[0]); mg = float(_sp[0] - _sp[1])
                         else:
                             tp = mg = None
-                        # v2 特征（若启用 v2 prompt）
                         if use_v2_prompt and first_logits_full is not None:
                             v2f = compute_router_v2_features(
                                 first_logits_full, batch_ques[_i2],
@@ -607,7 +552,6 @@ def cycle_epoch_infer(gpu_id, rank, dataset_part, savedir, max_pixels, sig, thre
                     direct_v2_feats.append(v2f)
             torch.cuda.empty_cache()
         
-        # ==================== 第2步：批量实体提取 ====================
         prompt_ques_template = '''
 You are a highly precise language analysis engine. Your sole function is to extract entities (e.g., objects, people) from a user's question, and deconstruct them into a canonical, attribute-based format by strictly following a set of rules and a thinking process.
 
@@ -685,7 +629,6 @@ Now, following all the rules above, extract the entities from the question below
                 entity_output_texts.append(output_text[0])
         torch.cuda.empty_cache()
         
-        # ==================== 第3步：逐条 attention 分析 + 最终回答 ====================
         for idx in range(actual_batch_size):
             sample = batch_samples[idx]
             results = sample
@@ -698,35 +641,25 @@ Now, following all the rules above, extract the entities from the question below
                 results["answer"]["ori"] = direct_output_texts[idx]
             results["bounding_box"] = {}
             results["prompt_text"] = {}
-            results["innovation_info"] = {}  # 记录创新点相关信息
+            results["innovation_info"] = {} # 
 
-            # 样本唯一 ID，用于热力图文件命名
             _sample_id = str(sample.get("id", f"rank{rank}_b{batch_start}_i{idx}"))
-            # 过滤文件名中的非法字符
             _sample_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in _sample_id)
 
             # ══════════════════════════════════════════════════════════════
-            # 难度感知路由：决定本样本是否走 GRACE
-            #   v2 路由器：基于 RouterV2 Cost-Aware Conformal Safe-Skip
-            #   v1 路由器：基于 Router（旧版 5 维 LogReg Conformal）/ 4 类 Threshold-Free
             # ══════════════════════════════════════════════════════════════
-            should_run_grace_pipeline = True   # 默认走 GRACE（即不启用路由器时）
+            should_run_grace_pipeline = True # GRACE
 
-            # v2 分支：优先使用 v2 特征调用 RouterV2.decide
             if (router is not None and router_kind is not None
                     and router_kind.startswith("v2_")
                     and idx < len(direct_v2_feats) and direct_v2_feats[idx] is not None):
                 try:
                     v2f = direct_v2_feats[idx]
-                    # 把所有计算出的特征都传给 router；RouterV2 根据自身 features
-                    # 列表按需取值（多余的会被忽略）。这样 router 升级换特征时
-                    # 推理端无需修改。
                     trigger, p_info = router.decide(
                         question_text=ques,
                         **v2f,
                     )
                     should_run_grace_pipeline = bool(trigger)
-                    # 记录 v2 特征到 innovation_info（便于事后分析）
                     for _k, _v in v2f.items():
                         results["innovation_info"][f"router_{_k}"] = float(_v)
                     if isinstance(p_info, dict):
@@ -738,12 +671,10 @@ Now, following all the rules above, extract the entities from the question below
                     results["innovation_info"]["router_kind"] = router_kind
                     results["innovation_info"]["router_features"] = list(router.features)
                 except Exception as _e:
-                    print(f"  [router v2] 决策失败，回退到全走 GRACE: {_e}")
+                    print(f" [router v2] GRACE: {_e}")
                     should_run_grace_pipeline = True
-            # v1 分支：旧 Router（ABCD 4 选项 entropy/topp/margin）
             elif router is not None and direct_entropies[idx] is not None:
                 try:
-                    # 新版 Router 需要 5 个特征：entropy/topp/margin + 2 个关键词
                     trigger, p_info = router.decide(
                         answer_entropy=direct_entropies[idx],
                         answer_topp=direct_topps[idx] if idx < len(direct_topps) else None,
@@ -756,7 +687,6 @@ Now, following all the rules above, extract the entities from the question below
                         results["innovation_info"]["router_answer_topp"] = float(direct_topps[idx])
                     if direct_margins[idx] is not None:
                         results["innovation_info"]["router_answer_margin"] = float(direct_margins[idx])
-                    # p_info 是 dict（4 类） 或包含 score/s_floor 的 dict（新版）
                     if isinstance(p_info, dict):
                         for k, v in p_info.items():
                             results["innovation_info"][f"router_{k}"] = (
@@ -764,12 +694,10 @@ Now, following all the rules above, extract the entities from the question below
                             )
                     results["innovation_info"]["router_trigger_grace"] = bool(trigger)
                 except Exception as _e:
-                    print(f"  [router] 决策失败，回退到全走 GRACE: {_e}")
+                    print(f" [router] GRACE: {_e}")
                     should_run_grace_pipeline = True
 
-            # 若路由器判定不需要 GRACE，直接把 direct answer 作为最终结果
             if router is not None and not should_run_grace_pipeline:
-                # 用 direct-answer 填写 HiDe 标准键（与 GRACE 路径保持 schema 一致）
                 for s in sig:
                     for t in thre:
                         results["answer"][f"HiDe_s{s}_t{t}"] = direct_output_texts[idx]
@@ -778,7 +706,7 @@ Now, following all the rules above, extract the entities from the question below
                 results.pop("image", None)
                 serialize_dict(results, savedir)
                 torch.cuda.empty_cache()
-                continue   # 本样本完成，处理下一条
+                continue # 
 
             entity_text = entity_output_texts[idx]
             answer_out = entity_text.split("<FINAL_OUTPUT>")[-1].split("</FINAL_OUTPUT>")[0]
@@ -791,23 +719,17 @@ Now, following all the rules above, extract the entities from the question below
             if answer_out:
                 entity_list = [e.strip() for e in answer_out.split(',') if e.strip()]
 
-                # ── 初始化公共变量 ──────────────────────────────────────────────
                 expert_bboxes_per_img = None
                 expert_results_raw = {}
                 entity_token_indices = None
                 entity_token_map = {}
                 expert_reliability = 0.0
-                sam3_supplement_bboxes_per_img = None   # GRACE 专用
-                sam3_entity_labels_per_img = None           # GRACE 专用
+                sam3_supplement_bboxes_per_img = None # GRACE 
+                sam3_entity_labels_per_img = None # GRACE 
 
                 # ══════════════════════════════════════════════════════════════
-                # GRACE 模式（新方案）:
-                #   A. SAM3 文本提示 → 独立补充 bbox（不融合进注意力图）
-                #   B. Search Prompt → TAD 逐 token 注意力图 + Otsu 二值化
-                #   C. 最终 bbox = 注意力 bbox ∪ SAM3 bbox
                 # ══════════════════════════════════════════════════════════════
                 if enable_grace:
-                    # A. SAM3 文本提示检测（与 Search Prompt 关键词相同）
                     sam3_results_raw = call_grounding_expert(
                         img_url[0], entity_list,
                         expert_url=grace_sam3_url
@@ -824,7 +746,6 @@ Now, following all the rules above, extract the entities from the question below
                     }
 
                 # ══════════════════════════════════════════════════════════════
-                # 旧 EGAF 模式（保持向后兼容）
                 # ══════════════════════════════════════════════════════════════
                 elif enable_saaa:
                     expert_results_raw = call_grounding_expert(
@@ -843,10 +764,6 @@ Now, following all the rules above, extract the entities from the question below
                     results["innovation_info"]["egaf_expert_total"] = len(all_expert_bboxes)
                     results["innovation_info"]["egaf_reliability"] = round(expert_reliability, 3)
 
-                # B. 构建 Search Prompt 并获取注意力图
-                # GRACE / EGAF / TAD 均使用 Search Prompt 方案提取注意力；
-                # GRACE 通过 process_grace（TAD 逐 token + Otsu 自适应阈值）
-                # 在后处理阶段提升信噪比，而非在 token 遍历阶段做实体过滤。
                 messages[-1]["content"].append(
                     {"type": "text", "text": "Search the following entities in the images: " + answer_out}
                 )
@@ -858,7 +775,6 @@ Now, following all the rules above, extract the entities from the question below
                     model, qwen_processor, inputs
                 )
 
-                # C. 实体 token 定位（仅 EGAF/SAAA 需要，GRACE 已退回 TAD 逐 token 遍历）
                 if enable_saaa:
                     entity_token_indices, entity_token_map = find_entity_token_indices(
                         answer_out, idx2word_dicts, inputs, img_end,
@@ -871,7 +787,6 @@ Now, following all the rules above, extract the entities from the question below
                     n_entity = len(entity_token_indices)
                     results["innovation_info"]["entity_token_speedup"] = f"{n_entity}/{n_total} tokens"
 
-                # D. 注意力图 → bbox（含 SAM3 补充框插入）
                 att_results = from_img_and_att_get_cropbox(
                     inputs, attention, idx2word_dicts, img_url, img_start, img_end, sig, thre,
                     enable_saaa=enable_saaa and not enable_grace,
@@ -894,7 +809,6 @@ Now, following all the rules above, extract the entities from the question below
                     for t in thre:
                         img_merged_boxes, crop_list, words_lines, highlight_imgs, bounding_boxes, hide_highlight_imgs = unpack_att_result(att_results[str(s)][str(t)])
 
-                        # 旧 EGAF 专家补全（仅 EGAF 模式，ρ > 0 时执行）
                         if enable_saaa and not enable_grace and expert_results_raw and expert_reliability > 0:
                             tad_all_bboxes = []
                             for imgidx in bounding_boxes:
@@ -920,7 +834,6 @@ Now, following all the rules above, extract the entities from the question below
                                 if new_highlight_imgs:
                                     highlight_imgs = new_highlight_imgs
                         
-                        # ====== 创新点2: ACR - 噪声bbox过滤 ======
                         if enable_acr:
                             for imgidx in bounding_boxes:
                                 original_count = len(bounding_boxes[imgidx])
@@ -933,7 +846,6 @@ Now, following all the rules above, extract the entities from the question below
                                 results["innovation_info"][f"acr_bbox_filter_s{s}_t{t}"] = \
                                     f"{original_count}->{filtered_count}"
                         
-                        # ====== 创新点3: PMGVV - 视觉验证 ======
                         verification_passed = True
                         if enable_pmgvv and highlight_imgs:
                             verify_prompt = build_verification_prompt(answer_out, has_crop=True)
@@ -951,11 +863,9 @@ Now, following all the rules above, extract the entities from the question below
                             if 'no' in verify_answer and 'yes' not in verify_answer:
                                 verification_passed = False
                                 results["innovation_info"][f"pmgvv_verify_s{s}_t{t}"] = "failed_expanding"
-                                # 扩展bbox区域
                                 for imgidx in bounding_boxes:
                                     expanded = [expand_bbox(b, pmgvv_expand_ratio) for b in bounding_boxes[imgidx]]
                                     bounding_boxes[imgidx] = expanded
-                                # 重新生成裁剪图（使用扩展后的bbox）
                                 new_highlight_imgs = []
                                 for imgidx in bounding_boxes:
                                     new_img, new_bboxs, _ = compact_and_center_with_relative_pos(
@@ -970,12 +880,6 @@ Now, following all the rules above, extract the entities from the question below
                                 results["innovation_info"][f"pmgvv_verify_s{s}_t{t}"] = "passed"
                             torch.cuda.empty_cache()
                         
-                        # ── Requirement 2: 二次 SAM3 验证（在注意力 bbox 内裁剪搜索）────
-                        # 新方案（overlay 流程）：
-                        #   1. 二次 SAM3 返回的新 bbox 不污染 bounding_boxes
-                        #   2. 把首次 SAM3 bbox + 二次 SAM3 新 bbox 一起构造成
-                        #      overlay_bboxes_per_img，传给 LPD 画彩色边框
-                        #   3. 若两次 SAM3 都无结果，overlay 为空 → 与 HiDe LPD 等价
                         if enable_grace and entity_list and highlight_imgs:
                             try:
                                 _sec_img_url, found_secondary, new_entries_per_img = secondary_sam3_check_on_att_bboxes(
@@ -989,7 +893,6 @@ Now, following all the rules above, extract the entities from the question below
                                 )
 
                                 if found_secondary and new_entries_per_img:
-                                    # 统一颜色映射：首次 + 二次 SAM3 所有实体共用同一个映射
                                     _first_labels = []
                                     if sam3_entity_labels_per_img:
                                         for _lbs in sam3_entity_labels_per_img.values():
@@ -1002,10 +905,7 @@ Now, following all the rules above, extract the entities from the question below
                                         list(_first_labels) + list(_sec_all_labels)
                                     )
 
-                                    # 构建合并的 overlay_bboxes_per_img
                                     overlay_merged = {}
-                                    # 首次 SAM3：复制进 overlay（同时也要确保对应 bounding_boxes 包含该区域；
-                                    # 在 from_img_and_att_get_cropbox 中已处理过，这里不需要再追加）
                                     if sam3_supplement_bboxes_per_img:
                                         for _imgidx, _bxs in sam3_supplement_bboxes_per_img.items():
                                             _lbs = (
@@ -1025,7 +925,6 @@ Now, following all the rules above, extract the entities from the question below
                                                     "label": _lb or "",
                                                 })
 
-                                    # 二次 SAM3：新 bbox 需加入 bounding_boxes 保证裁剪包含该区域
                                     for _imgidx, entries in new_entries_per_img.items():
                                         if _imgidx not in bounding_boxes:
                                             bounding_boxes[_imgidx] = []
@@ -1040,7 +939,6 @@ Now, following all the rules above, extract the entities from the question below
                                                 "label": _lb or "",
                                             })
 
-                                    # 重新跑 LPD + 追加图注
                                     new_hl = []
                                     for _imgidx in bounding_boxes:
                                         _src = img_url[_imgidx] if _imgidx < len(img_url) else img_url[0]
@@ -1070,9 +968,8 @@ Now, following all the rules above, extract the entities from the question below
 
                                 results["innovation_info"][f"secondary_sam3_s{s}_t{t}"] = found_secondary
                             except Exception as _e:
-                                print(f"[secondary_sam3] 跳过: {_e}")
+                                print(f"[secondary_sam3] : {_e}")
 
-                        # ── Requirement 3: 保存 LPD 输出图（额外保留 HiDe-only 与最终 GRACE 两套）──
                         if heatmap_save_dir:
                             import os as _os
                             _os.makedirs(heatmap_save_dir, exist_ok=True)
@@ -1085,7 +982,7 @@ Now, following all the rules above, extract the entities from the question below
                                         with open(_fpath, "wb") as _f:
                                             _f.write(base64.b64decode(_b64d))
                                     except Exception as _e:
-                                        print(f"[save_lpd] 保存失败 {_fname}: {_e}")
+                                        print(f"[save_lpd] {_fname}: {_e}")
                             if highlight_imgs:
                                 for _hi, _h_img in enumerate(highlight_imgs):
                                     _fname = f"{_sample_id}_s{s}_t{t}_lpd_out_{_hi}.png"
@@ -1095,25 +992,16 @@ Now, following all the rules above, extract the entities from the question below
                                         with open(_fpath, "wb") as _f:
                                             _f.write(base64.b64decode(_b64d))
                                     except Exception as _e:
-                                        print(f"[save_lpd] 保存失败 {_fname}: {_e}")
+                                        print(f"[save_lpd] {_fname}: {_e}")
 
-                        # 最终推理
                         final_messages = [{"role": "user","content": []}]
                         append_visual_inputs(final_messages[-1]["content"], ori_img_url, hide_highlight_imgs, highlight_imgs)
-                        # ⚠️ GRACE 最终推理保持原始 prompt（<FINAL_OUTPUT> 模板），
-                        # 不使用 v2 "Answer:" 简洁 prompt。原因：
-                        #   1) GRACE 路径带多张图（原图 + HiDe LPD 图 + 覆盖 SAM3 bbox 的图），
-                        #      模型需要 tag 模板的推理空间（尤其空间关系题），简洁 prompt 会损失质量
-                        #   2) v2 prompt 仅用于 direct-answer 阶段采集 router 特征，
-                        #      被 skip 到 ori 的样本才用 v2 prompt 的输出；被 trigger 走 GRACE 的样本
-                        #      应使用原始 pipeline 的 prompt 链路
                         final_messages[-1]["content"].append({"type": "text", "text": ques+"\nAnswer with the option's letter from the given choices letter. The final and only output content must be enclosed within `<FINAL_OUTPUT>` and `</FINAL_OUTPUT>` tags."})
                         text,image_inputs,video_inputs,inputs,video_kwargs = get_inputs(final_messages,qwen_processor,model)
                         output_text,_ = messages2out(model,qwen_processor,inputs)
                         if not str(s) in outputs:outputs[str(s)] = {}
                         outputs[str(s)][str(t)] = [[answer_out],output_text,crop_list,highlight_imgs,final_messages,words_lines,img_merged_boxes,bounding_boxes]
             else:
-                # 未提取到实体词时，用原始问题作为 Search Prompt（GRACE / TAD 统一）
                 messages[-1]["content"].append({"type": "text", "text": "Search the following entities in the images: " + ques +"\nAnswer with the option's letter from the given choices letter. The final and only output content must be enclosed within `<FINAL_OUTPUT>` and `</FINAL_OUTPUT>` tags."})
                 text, image_inputs, video_inputs, inputs, video_kwargs = get_inputs(messages, qwen_processor, model)
                 attention, idx2word_dicts, img_start, img_end = messages2att(model, qwen_processor, inputs)
@@ -1144,7 +1032,6 @@ Now, following all the rules above, extract the entities from the question below
                         
                         final_messages = [{"role": "user","content": []}]
                         append_visual_inputs(final_messages[-1]["content"], ori_img_url, hide_highlight_imgs, highlight_imgs)
-                        # GRACE 最终推理：保持原始 <FINAL_OUTPUT> prompt（同上原因）
                         final_messages[-1]["content"].append({"type": "text", "text": ques+"\nAnswer with the option's letter from the given choices letter. The final and only output content must be enclosed within `<FINAL_OUTPUT>` and `</FINAL_OUTPUT>` tags."})
                         text,image_inputs,video_inputs,inputs,video_kwargs = get_inputs(final_messages,qwen_processor,model)
                         output_text,_ = messages2out(model,qwen_processor,inputs)
@@ -1158,7 +1045,6 @@ Now, following all the rules above, extract the entities from the question below
                         
                         hide_answer_text = output_text[0]
                         
-                        # ====== 创新点2: ACR - 置信度路由 ======
                         if enable_acr:
                             ori_letter = extract_answer_letter(direct_output_texts[idx])
                             hide_letter = extract_answer_letter(hide_answer_text)

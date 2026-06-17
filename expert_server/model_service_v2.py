@@ -323,7 +323,7 @@ async def predict(request: ImageRequest):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     uvicorn.run(
-        app,                       # 直接传入 app 对象，避免重新 import 导致模型加载两次
+        app, # app import 
         host="0.0.0.0",
         port=args.port,
         limit_concurrency=10000,

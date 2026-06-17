@@ -1,14 +1,14 @@
 """
 ================================================================================
-ROUTER — Conformal Safe-Skip Router 部署用类
+ROUTER Conformal Safe-Skip Router 
 ================================================================================
 
-无硬阈值的非对称代价路由器：
-  decision: run_grace ⟺ s(x) ≥ s_floor
-  其中 s_floor 不是手工选择，而是从训练数据中"应触发"类别的 OOF 最小分数
-  自动计算得到（α=0 严格全召回；α>0 允许 α 比例的漏召回换更大跳过区）。
 
-部署接口与之前 BinaryConservativeRouter 兼容：
+  decision: run_grace ⟺ s(x) ≥ s_floor
+   s_floor "" OOF 
+  α=0 α>0 α 
+
+ BinaryConservativeRouter 
 
     from tools.router import Router
     router = Router.load("router_report.json")
@@ -22,8 +22,8 @@ ROUTER — Conformal Safe-Skip Router 部署用类
     if trigger: <run GRACE>
     else:       <use ori answer>
 
-也兼容旧 3 维路由器（仅 entropy + spatial + detail）：
-若加载的 features 中无 topp/margin 字段，调用时这两个参数可省略。
+ 3 entropy + spatial + detail
+ features topp/margin 
 """
 import os
 import json
@@ -54,11 +54,11 @@ class Router:
     """
     Conformal Safe-Skip Router.
 
-    决策规则（无硬阈值）：
-        s(x) = (x - μ) / σ · w + b      （logits 空间，未过 sigmoid）
+    
+        s(x) = (x - μ) / σ · w + b logits sigmoid
         run_grace ⟺ s(x) ≥ s_floor
 
-    s_floor 由训练数据自动决定：α=0 → 等于 ori_wrong 训练集 OOF 最小分数。
+    s_floor α=0 → ori_wrong OOF 
     """
 
     def __init__(self, weights, bias, feature_mu, feature_sd, s_floor,
@@ -75,24 +75,23 @@ class Router:
         ]
 
     def _build_x(self, kw):
-        """根据 self.features 列表组装 x 向量"""
+        """ self.features x """
         vec = []
         for f in self.features:
             if f in kw and kw[f] is not None:
                 vec.append(float(kw[f]))
             else:
-                # 缺失时用 mu（标准化后 = 0，对该维度无贡献）
                 idx = self.features.index(f)
                 vec.append(float(self.mu[idx]))
         return np.array(vec, dtype=np.float64)
 
     def score(self, **kw) -> float:
         """
-        关键字参数应包含 self.features 中需要的字段：
+         self.features 
             answer_entropy, answer_topp, answer_margin,
             has_spatial_keyword, has_fine_detail_keyword
-        若缺失会用训练时的均值（标准化后 = 0）补齐。
-        也接受 question_text 自动算出后两个 keyword 标志。
+         = 0
+         question_text keyword 
         """
         if "question_text" in kw and ("has_spatial_keyword" not in kw or "has_fine_detail_keyword" not in kw):
             pri = question_priors(kw["question_text"])
@@ -108,12 +107,12 @@ class Router:
                question_text: str = "",
                **extra):
         """
-        返回 (trigger_grace: bool, info: dict)
+         (trigger_grace: bool, info: dict)
         info = {"score":..., "s_floor":..., "margin_to_floor":...}
 
-        以下 5 个特征中缺失的会自动用训练均值替代：
+         5 
             answer_entropy / answer_topp / answer_margin
-            has_spatial_keyword / has_fine_detail_keyword（自动从 question 提取）
+            has_spatial_keyword / has_fine_detail_keyword question 
         """
         kw = {
             "answer_entropy": answer_entropy,

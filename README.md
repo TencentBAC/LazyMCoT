@@ -1,5 +1,5 @@
 <div align="center">
-<h1>Focus When Necessary: Adaptive Routing and Collaborative Grounding for Training-Free Visual Grounding</h1>
+<h1>Focus When Necessary: Adaptive Routing and Collaborative Grounding for <br>Training-Free Visual Grounding</h1>
 </div>
 
 <div align="center">
@@ -12,7 +12,7 @@
 <br>
 
 <p align="center">
-  <b>Yifan Wang<sup>1,2</sup>, Peiming Li<sup>1,3</sup>, Shiyu Li<sup>1</sup>, Zhiyuan Hu<sup>1,3</sup>, Xiaochen Yang<sup>4</sup>, Wenming Yang<sup>2,†</sup>, Yang Tang<sup>1,†,‡</sup>, Zheng Wei<sup>1,†</sup></b><br>
+  <b>Yifan Wang<sup>1,2</sup>, Peiming Li<sup>1,3</sup>, Shiyu Li<sup>1</sup>, Zhiyuan Hu<sup>1,3</sup>, Xiaochen Yang<sup>4</sup>, <br>Wenming Yang<sup>2,†</sup>, Yang Tang<sup>1,†,‡</sup>, Zheng Wei<sup>1,†</sup></b><br>
   <br>
   <sup>1</sup>Tencent BAC &nbsp;&nbsp; <sup>2</sup>Tsinghua University &nbsp;&nbsp; <sup>3</sup>Peking University &nbsp;&nbsp; <sup>4</sup>University of Glasgow<br>
   <br>

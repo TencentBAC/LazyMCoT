@@ -22,10 +22,8 @@ from transformers.utils.deprecation import deprecate_kwarg
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig, Qwen2_5_VLTextConfig, Qwen2_5_VLVisionConfig
 
-#只在对应的层数计算att socre，其余层数返回None
 SELECT_LAYER = [15] #7b
 
-#若为True，则在全层数计算att score（此项等级高于SELECT_LAYER）
 USE_ALLATT = False
 # USE_ALLATT = True
 
@@ -666,18 +664,18 @@ class Qwen2_5_VLAttention(nn.Module):
             def chunked_attention(module, query_states, key_states, head_dim, target_indices=None, chunk_size=512, attention_mask=None):
                 # print("target_indices:",target_indices)
                 """
-                先提取 target_indices 对应的 query token，再在其上进行分块处理。
+                 target_indices query token
                 
-                参数:
+                :
                     query_states: [B, H, Q_LEN, D]
                     key_states:   [B, H, K_LEN, D]
                     head_dim:     D
-                    target_indices: Optional[List[int] or Tensor] 需要计算 attention 的 query token 索引列表
-                    chunk_size:   每次处理多少个 target token
-                    attention_mask: Optional[Tensor] 形状 [B, 1, Q_LEN, K_LEN] 或类似
+                    target_indices: Optional[List[int] or Tensor] attention query token 
+                    chunk_size: target token
+                    attention_mask: Optional[Tensor] [B, 1, Q_LEN, K_LEN] 
                     
-                返回:
-                    attn_weights: [B, H, Q_LEN, K_LEN]，未计算的位置为 0
+                :
+                    attn_weights: [B, H, Q_LEN, K_LEN] 0
                 """
                 new_key_states = repeat_kv(key_states, module.num_key_value_groups)
                 # print("query_states shape: ", query_states.shape)
@@ -687,10 +685,8 @@ class Qwen2_5_VLAttention(nn.Module):
                 device = query_states.device
                 dtype = query_states.dtype
 
-                # 统一类型
                 new_key_states = new_key_states.to(dtype)
 
-                # 初始化输出张量
                 # print(B,H,Q_LEN,K_LEN)
                 # attn_weights = torch.zeros(B, 1, Q_LEN,K_LEN,device=device, dtype=dtype)
 
@@ -699,7 +695,6 @@ class Qwen2_5_VLAttention(nn.Module):
                 scale = 1.0 / math.sqrt(head_dim)
                 # scale = 1
 
-                # 如果没有指定 target_indices，则全部计算
                 if target_indices is None:
                     target_indices = torch.arange(Q_LEN, device=device)
                 else:
@@ -710,22 +705,18 @@ class Qwen2_5_VLAttention(nn.Module):
 
                 num_targets = len(target_indices)
                 # print(num_targets)
-                # ✅ 先提取所有需要计算的 query token
                 selected_query_states = query_states.index_select(dim=2, index=target_indices)  # [B, H, num_targets, D]
 
-                # ✅ 在这些选中的 token 上分块处理
                 for i in range(0, num_targets, chunk_size):
                     end_i = min(i + chunk_size, num_targets)
-                    current_indices = target_indices[i:end_i]  # 当前 chunk 的原始位置
+                    current_indices = target_indices[i:end_i] # chunk 
                     q_chunk = selected_query_states[:, :, i:end_i, :]  # [B, H, chunk_q, D]
                     B,H,_,_ = q_chunk.shape
                     attn_chunk = torch.zeros(B, 1, end_i - i, K_LEN, device=device, dtype=dtype)
                     for h in range(H):
                         q_chunk_h = q_chunk[:, h, :, :][:,None]
                         key_states_h = new_key_states[:, h, :, :][:,None]
-                        # 计算当前 chunk 的 attention
                         attn_chunk_h = torch.matmul(q_chunk_h, key_states_h.transpose(2, 3)) * scale  # [B, H, chunk_q, K_LEN]
-                        # 应用 mask（如果存在）
                         if attention_mask is not None:
                             causal_mask = attention_mask.index_select(dim=2, index=current_indices)  # [B, 1, chunk_q, K_LEN]
                             attn_chunk_h += causal_mask
@@ -734,21 +725,18 @@ class Qwen2_5_VLAttention(nn.Module):
                         if dtype in (torch.float16, torch.bfloat16):
                             attn_chunk_h = torch.where(torch.isinf(attn_chunk_h), torch.zeros_like(attn_chunk_h), attn_chunk_h)
 
-                        # Softmax 升精度
                         attn_chunk_h = F.softmax(attn_chunk_h, dim=-1, dtype=torch.float32).to(dtype)
                         attn_chunk += attn_chunk_h
                         del attn_chunk_h
-                    # # ✅ 转到 CPU，在 H 维度求均值，得到 [B, 1, chunk_q, K_LEN]
                     attn_chunk_cpu = (attn_chunk/H).detach().cpu().float().numpy()  # [B, 1, chunk_q, K_LEN]
                     # print("attn_chunk_cpu shape: ",attn_chunk_cpu.shape)
                     del attn_chunk
                     
-                    # # # ✅ 写入结果到 attn_weights (list)
                     for b in range(B):
                         # print(end_i,i)
-                        for j in range(end_i - i):  # 当前 chunk 中的 index
-                            q_idx = current_indices[j].item()  # 原始 query token index
-                            cpu_attn_weight[b][0][q_idx] = attn_chunk_cpu[b, 0, j]  # 存为 numpy array
+                        for j in range(end_i - i): # chunk index
+                            q_idx = current_indices[j].item() # query token index
+                            cpu_attn_weight[b][0][q_idx] = attn_chunk_cpu[b, 0, j] # numpy array
 
                     torch.cuda.empty_cache()
                 # cpu_attn_weight = attn_weights.cpu().float().numpy()
