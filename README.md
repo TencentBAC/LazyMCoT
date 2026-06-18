@@ -57,7 +57,7 @@ Extensive experiments across multiple challenging benchmarks and diverse VLM bac
 ## 🛠️ Installation
 
 ```bash
-git clone https://github.com/<your-org>/LazyMCoT.git
+git clone https://github.com/TencentBAC/LazyMCoT.git
 cd LazyMCoT
 
 # Install PyTorch first (choose the build matching your CUDA), e.g.:
